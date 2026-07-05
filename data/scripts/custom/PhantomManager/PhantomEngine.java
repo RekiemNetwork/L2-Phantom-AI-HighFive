@@ -1,0 +1,560 @@
+package custom.PhantomManager;
+
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+
+import org.l2jmobius.commons.database.DatabaseFactory;
+import org.l2jmobius.commons.threads.ThreadPool;
+import org.l2jmobius.commons.util.Rnd;
+import org.l2jmobius.gameserver.ai.Intention;
+import org.l2jmobius.gameserver.config.custom.MultilingualSupportConfig;
+import org.l2jmobius.gameserver.data.sql.CharSummonTable;
+import org.l2jmobius.gameserver.data.xml.MapRegionData;
+import org.l2jmobius.gameserver.geoengine.GeoEngine;
+import org.l2jmobius.gameserver.model.Location;
+import org.l2jmobius.gameserver.model.World;
+import org.l2jmobius.gameserver.model.actor.Player;
+import org.l2jmobius.gameserver.model.actor.enums.player.TeleportWhereType;
+import org.l2jmobius.gameserver.network.serverpackets.ValidateLocation;
+
+public class PhantomEngine
+{
+	public static final List<Player> activePhantoms = new CopyOnWriteArrayList<>();
+	public static volatile boolean isRunning = false;
+	
+	public static void startSystem(Player gm)
+	{
+		startBatch(10, gm);
+	}
+	
+	public static synchronized void startBatch(int count, Player gm)
+	{
+		if (isRunning)
+		{
+			PhantomManager.logToFile("SYSTEM", "Sistema ya estaba corriendo. Agregando lote de " + count + ".");
+		}
+		else
+		{
+			PhantomManager.startLogSession("PHANTOM_START");
+			isRunning = true;
+		}
+		PhantomManager.logToFile("SYSTEM", "Iniciando lote de hasta " + count + " phantoms. IDs configurados=" + PhantomConfig.PHANTOM_IDS.size());
+		final int loadedCount = bringOnlineInternal(count, false);
+		if (gm != null)
+		{
+			gm.sendMessage(">>> Se iniciaron " + loadedCount + " phantoms en este lote.");
+			PhantomMenu.showMenu(gm);
+		}
+	}
+
+	/**
+	 * Conecta hasta {@code count} phantoms del pool XML que no esten ya online.
+	 * @param count numero maximo a conectar
+	 * @param withSession si {@code true} cada phantom recibe una hora de fin de sesion (gestion automatica de poblacion)
+	 * @return cuantos se conectaron
+	 */
+	private static int bringOnlineInternal(int count, boolean withSession)
+	{
+		int loadedCount = 0;
+		for (int charId : PhantomConfig.PHANTOM_IDS)
+		{
+			if (loadedCount >= count)
+			{
+				break;
+			}
+			try
+			{
+				if (World.getInstance().getPlayer(charId) != null)
+				{
+					continue;
+				}
+
+				final Player phantom = Player.load(charId);
+				if (phantom == null)
+				{
+					continue;
+				}
+
+				preparePhantom(phantom, false);
+				registerPhantom(phantom, Rnd.get(100) < 10, Rnd.get(100) < 3);
+				if (withSession)
+				{
+					PhantomState.SESSION_END.put(phantom.getObjectId(), System.currentTimeMillis() + Rnd.get((int) PhantomConfig.SESSION_MIN_MS, (int) PhantomConfig.SESSION_MAX_MS));
+				}
+				startPhantomAI(phantom);
+				PhantomManager.logToFile(phantom.getName(), "Conectado desde XML. online=" + phantom.isOnline() + " spawned=" + phantom.isSpawned() + " loc=" + phantom.getX() + "," + phantom.getY() + "," + phantom.getZ());
+				loadedCount++;
+			}
+			catch (Exception e)
+			{
+				PhantomManager.logException("SPAWN", "Error al spawnear charId " + charId, e);
+			}
+		}
+		return loadedCount;
+	}
+
+	/**
+	 * Punto de entrada del gestor automatico de poblacion: conecta un lote con sesiones.
+	 * @param count numero maximo a conectar
+	 * @return cuantos se conectaron
+	 */
+	public static synchronized int bringOnline(int count)
+	{
+		if (!isRunning)
+		{
+			PhantomManager.startLogSession("PHANTOM_POPULATION");
+			isRunning = true;
+		}
+		return bringOnlineInternal(count, true);
+	}
+
+	/**
+	 * Desconecta un phantom concreto (fin de sesion). No borra su personaje: sigue en el pool XML.
+	 * @param phantom el phantom a desconectar
+	 */
+	public static synchronized void logoutPhantom(Player phantom)
+	{
+		if (phantom == null)
+		{
+			return;
+		}
+		PhantomManager.logToFile(phantom.getName(), "Fin de sesion. Se desconecta.");
+		PhantomState.unregister(phantom.getObjectId());
+		activePhantoms.remove(phantom);
+		phantom.deleteMe();
+	}
+	
+	public static synchronized void createAndStart(int count, Player gm)
+	{
+		createAndStart(count, 0, 0, gm);
+	}
+
+	public static synchronized void createAndStart(int count, int minLevel, int maxLevel, Player gm)
+	{
+		PhantomManager.startLogSession("PHANTOM_CREATE_" + count);
+		if (!isRunning)
+		{
+			isRunning = true;
+		}
+
+		int createdCount = 0;
+		for (Player phantom : PhantomFactory.createPhantoms(count, minLevel, maxLevel))
+		{
+			try
+			{
+				preparePhantom(phantom, true);
+				registerPhantom(phantom, Rnd.get(100) < 17, Rnd.get(100) < 6);
+				PhantomConfig.addPhantomId(phantom.getObjectId());
+				startPhantomAI(phantom);
+				PhantomManager.logToFile(phantom.getName(), "IA programada desde creacion. online=" + phantom.isOnline() + " spawned=" + phantom.isSpawned() + " loc=" + phantom.getX() + "," + phantom.getY() + "," + phantom.getZ());
+				createdCount++;
+			}
+			catch (Exception e)
+			{
+				PhantomManager.logException("AUTO_SPAWN", "Error iniciando phantom", e);
+			}
+		}
+		
+		if (gm != null)
+		{
+			gm.sendMessage("Se crearon e iniciaron " + createdCount + " phantoms automaticos.");
+			PhantomManager.logToFile("AUTO_CREATE", "Se crearon " + createdCount + " phantoms automaticos.");
+			PhantomMenu.showMenu(gm);
+		}
+	}
+	
+	public static synchronized int stopSome(int count, Player gm)
+	{
+		int stopped = 0;
+		for (Player p : activePhantoms)
+		{
+			if (stopped >= count)
+			{
+				break;
+			}
+			if (p != null)
+			{
+				PhantomManager.logToFile(p.getName(), "Desconectado por lote GM.");
+				PhantomState.unregister(p.getObjectId());
+				activePhantoms.remove(p);
+				p.deleteMe();
+				stopped++;
+			}
+		}
+		
+		if (activePhantoms.isEmpty())
+		{
+			isRunning = false;
+		}
+		if (gm != null)
+		{
+			gm.sendMessage("Se desconectaron " + stopped + " phantoms.");
+			PhantomMenu.showMenu(gm);
+		}
+		return stopped;
+	}
+	
+	public static synchronized void stopSystem(Player gm)
+	{
+		if (!isRunning)
+		{
+			return;
+		}
+
+		// Para tambien el gestor automatico: un .pstop del GM no debe ser repoblado a los 90s.
+		PhantomPopulation.stop();
+		PhantomManager.logToFile("SYSTEM", "Deteniendo sistema. Phantoms activos=" + activePhantoms.size());
+		isRunning = false;
+		for (Player p : activePhantoms)
+		{
+			if (p != null)
+			{
+				p.deleteMe();
+			}
+		}
+		
+		activePhantoms.clear();
+		PhantomState.clear();
+		
+		if (gm != null)
+		{
+			gm.sendMessage(">>> Sistema DETENIDO.");
+		}
+	}
+	
+	public static Player getPhantomByName(String name)
+	{
+		return activePhantoms.stream().filter(p -> p.getName().equalsIgnoreCase(name)).findFirst().orElse(null);
+	}
+
+	public static void setOnlineFlag(Player phantom, boolean online)
+	{
+		try (Connection con = DatabaseFactory.getConnection();
+			PreparedStatement ps = con.prepareStatement("UPDATE characters SET online=? WHERE charId=?"))
+		{
+			ps.setInt(1, online ? 1 : 0);
+			ps.setInt(2, phantom.getObjectId());
+			ps.execute();
+		}
+		catch (Exception e)
+		{
+			PhantomManager.logToFile("SYSTEM", "No se pudo actualizar el flag online de " + phantom.getName() + ": " + e.getMessage());
+		}
+	}
+
+	public static void applyOnlineFlagToAll(boolean online)
+	{
+		for (Player phantom : activePhantoms)
+		{
+			if (phantom != null)
+			{
+				setOnlineFlag(phantom, online);
+			}
+		}
+	}
+
+	public static boolean isObservedByRealPlayer(Player phantom, int radius)
+	{
+		return getNearestRealObserver(phantom, radius) != null;
+	}
+
+	public static Player getNearestRealObserver(Player phantom, int radius)
+	{
+		Player nearest = null;
+		double nearestDistance = Double.MAX_VALUE;
+		for (Player p : World.getInstance().getVisibleObjectsInRange(phantom, Player.class, radius))
+		{
+			if (!p.isGM() && !activePhantoms.contains(p))
+			{
+				double distance = phantom.calculateDistance2D(p);
+				if (distance < nearestDistance)
+				{
+					nearestDistance = distance;
+					nearest = p;
+				}
+			}
+		}
+		return nearest;
+	}
+
+	public static void walkAwayFrom(Player bot, Player observer)
+	{
+		int dx = bot.getX() - observer.getX();
+		int dy = bot.getY() - observer.getY();
+		if ((dx == 0) && (dy == 0))
+		{
+			dx = Rnd.get(-1, 1);
+			dy = Rnd.get(-1, 1);
+		}
+		int newX = bot.getX() + (dx > 0 ? 1200 : -1200);
+		int newY = bot.getY() + (dy > 0 ? 1200 : -1200);
+		Location destination = GeoEngine.getInstance().getValidLocation(bot.getX(), bot.getY(), bot.getZ(), newX, newY, GeoEngine.getInstance().getHeight(newX, newY, bot.getZ()), bot.getInstanceId());
+		bot.getAI().setIntention(Intention.MOVE_TO, destination);
+	}
+
+	public static int countPhantomsNear(Location loc, int radius)
+	{
+		int count = 0;
+		for (Player p : activePhantoms)
+		{
+			if ((p != null) && !p.isDead() && (p.calculateDistance2D(loc) < radius))
+			{
+				count++;
+			}
+		}
+		return count;
+	}
+	
+	public static void movePhantomTo(Player phantom, Location loc, String reason)
+	{
+		movePhantomTo(phantom, loc, 0, reason);
+	}
+	
+	public static void movePhantomTo(Player phantom, Location loc, int instanceId, String reason)
+	{
+		if ((phantom == null) || (loc == null))
+		{
+			return;
+		}
+		
+		phantom.abortAttack();
+		phantom.abortCast();
+		phantom.setTarget(null);
+		phantom.setInstanceId(instanceId);
+		phantom.setInvisible(false);
+		phantom.setRunning();
+		phantom.setXYZ(loc.getX(), loc.getY(), loc.getZ());
+		if (loc.getHeading() != 0)
+		{
+			phantom.setHeading(loc.getHeading());
+		}
+		if (!phantom.isSpawned())
+		{
+			phantom.spawnMe(loc.getX(), loc.getY(), loc.getZ());
+		}
+		else
+		{
+			phantom.broadcastInfo();
+		}
+		phantom.broadcastUserInfo();
+		// El teleport crudo (setXYZ) no arrastra al servitor como haria teleToLocation: moverlo junto a su dueno o se queda plantado en el spot viejo.
+		if ((phantom.getSummon() != null) && !phantom.getSummon().isDead())
+		{
+			phantom.getSummon().teleToLocation(loc.getX() + Rnd.get(-60, 60), loc.getY() + Rnd.get(-60, 60), loc.getZ());
+		}
+		PhantomManager.logToFile(phantom.getName(), reason + ": " + loc.getX() + ", " + loc.getY() + ", " + loc.getZ() + " spawned=" + phantom.isSpawned());
+	}
+	
+	private static void preparePhantom(Player phantom, boolean creationSpawn)
+	{
+		// Sin cliente nadie fija el idioma: con multilang activo un lang null revienta la cadena de dano entera (NPE en NpcNameLocalisationData desde sendDamageMessage).
+		phantom.setLang(MultilingualSupportConfig.MULTILANG_DEFAULT);
+		phantom.setOnlineStatus(true, true);
+		if (PhantomConfig.COUNT_ONLINE_WEB)
+		{
+			// updateOnlineStatus escribe isOnlineInt()=0 al no haber cliente: sin este UPDATE la web los mostraria siempre offline.
+			setOnlineFlag(phantom, true);
+		}
+		phantom.setRunning();
+		phantom.setInvul(false);
+		phantom.setInvisible(false);
+		phantom.setInstanceId(0);
+		phantom.setEnteredWorld();
+		if (creationSpawn)
+		{
+			spawnAtCreationPoint(phantom);
+		}
+		else
+		{
+			spawnPhantom(phantom);
+		}
+		// La restauracion del servitor vive en EnterWorld (cliente): sin esto, la entrada de character_summons del logout anterior bloquea el canSummon PARA SIEMPRE.
+		if (CharSummonTable.getInstance().getServitors().containsKey(phantom.getObjectId()))
+		{
+			CharSummonTable.getInstance().restoreServitor(phantom);
+		}
+		phantom.broadcastUserInfo();
+	}
+	
+	private static void registerPhantom(Player phantom, boolean aggressive, boolean pkMode)
+	{
+		pkMode = pkMode && PhantomConfig.PK_ENABLED; // El rasgo PK es desactivable desde .pmenu.
+		if (!activePhantoms.contains(phantom))
+		{
+			activePhantoms.add(phantom);
+		}
+		
+		PhantomState.register(phantom.getObjectId(), aggressive, pkMode);
+		// El rasgo PK queda latente por debajo del nivel minimo: se volveran rojos en combate cuando les toque, como un PK real.
+		if (pkMode && (phantom.getLevel() >= PhantomConfig.PK_MIN_LEVEL))
+		{
+			phantom.setPkKills(Math.max(1, phantom.getPkKills()));
+			phantom.setKarma(Rnd.get(360, 3600));
+			phantom.updatePvpTitleAndColor(true);
+			phantom.broadcastKarma();
+			phantom.broadcastUserInfo();
+		}
+	}
+	
+	private static void spawnPhantom(Player phantom)
+	{
+		Location spot = PhantomHuntingSpots.getUncrowdedSpot(phantom);
+		int spawnX;
+		int spawnY;
+		int spawnZ;
+		if (spot != null)
+		{
+			Location safe = PhantomGeo.getSafeSpawn(spot, 250);
+			spawnX = safe.getX();
+			spawnY = safe.getY();
+			spawnZ = safe.getZ();
+		}
+		else
+		{
+			PhantomConfig.FarmZone zone = PhantomConfig.getIdealZone(phantom.getLevel());
+			Location safe = PhantomGeo.getNpcLikeSpawn(new Location(zone.townX, zone.townY, zone.townZ));
+			spawnX = safe.getX();
+			spawnY = safe.getY();
+			spawnZ = safe.getZ();
+		}
+		
+		if (phantom.isSpawned())
+		{
+			movePhantomTo(phantom, new Location(spawnX, spawnY, spawnZ), "Reposicionado en spot NPC");
+		}
+		else
+		{
+			phantom.spawnMe(spawnX, spawnY, spawnZ);
+		}
+		PhantomHuntingSpots.markAtLevelSpot(phantom);
+		PhantomManager.logToFile(phantom.getName(), "Spawn visible en spot NPC: " + spawnX + ", " + spawnY + ", " + spawnZ);
+	}
+	
+	private static void spawnAtCreationPoint(Player phantom)
+	{
+		Location point = phantom.getTemplate().getCreationPoint();
+		Location safe = PhantomGeo.getNpcLikeSpawn(point);
+		int spawnX = safe.getX();
+		int spawnY = safe.getY();
+		int spawnZ = safe.getZ();
+		
+		Location scattered = PhantomGeo.getSafeSpawn(new Location(spawnX, spawnY, spawnZ), 150);
+		if (phantom.isSpawned())
+		{
+			movePhantomTo(phantom, scattered, "Reposicionado en ciudad de origen");
+		}
+		else
+		{
+			phantom.spawnMe(scattered.getX(), scattered.getY(), scattered.getZ());
+		}
+		PhantomState.HUNT_LEVEL_BAND.put(phantom.getObjectId(), -1);
+		PhantomState.NEXT_HUNT_TELEPORT.put(phantom.getObjectId(), System.currentTimeMillis() + 60000L);
+		PhantomManager.logToFile(phantom.getName(), "Nacido en ciudad de origen: " + scattered.getX() + ", " + scattered.getY() + ", " + scattered.getZ());
+	}
+	
+	private static void teleportPhantomToTown(Player phantom)
+	{
+		Location point = MapRegionData.getInstance().getTeleToLocation(phantom, TeleportWhereType.TOWN);
+		Location safe = PhantomGeo.getSafeSpawn(point, 150);
+		movePhantomTo(phantom, safe, "Revive en ciudad mas cercana");
+		PhantomState.HUNT_LEVEL_BAND.put(phantom.getObjectId(), -1);
+		PhantomState.NEXT_HUNT_TELEPORT.put(phantom.getObjectId(), System.currentTimeMillis() + 30000L);
+	}
+	
+	public static void startPhantomAI(Player bot)
+	{
+		if ((bot == null) || !isRunning)
+		{
+			return;
+		}
+		
+		ThreadPool.schedule(() ->
+		{
+			// El contains() mata los ticks huerfanos: tras .pstop + .pstart rapido, el tick del Player borrado seguia vivo y lo re-spawneaba como fantasma duplicado del charId.
+			if (!isRunning || !activePhantoms.contains(bot))
+			{
+				return;
+			}
+			
+			try
+			{
+				if (!bot.isSpawned() && !bot.isDead())
+				{
+					PhantomManager.logToFile(bot.getName(), "IA detecto phantom sin spawn. Reposicionando.");
+					spawnPhantom(bot);
+				}
+				if (!bot.isDead())
+				{
+					traceAi(bot, "tick online=" + bot.isOnline() + " spawned=" + bot.isSpawned() + " moving=" + bot.isMoving() + " casting=" + bot.isCastingNow() + " attacking=" + bot.isAttackingNow() + " loc=" + bot.getX() + "," + bot.getY() + "," + bot.getZ());
+					bot.broadcastPacket(new ValidateLocation(bot)); // Los observadores no validan la posicion de un jugador sin cliente; resincroniza para que los efectos (aura de level-up) caigan sobre el personaje.
+					PhantomEquipment.applyBasicBuffs(bot);
+					PhantomEquipment.checkProgression(bot);
+					PhantomEquipment.cleanInventory(bot);
+					PhantomAI.thinkAndFarm(bot);
+				}
+				else if (bot.isDead())
+				{
+					if (!PhantomState.REVIVING_PHANTOMS.add(bot.getObjectId()))
+					{
+						return;
+					}
+					
+					if (Rnd.get(100) < 60)
+					{
+						ThreadPool.schedule(() ->
+						{
+							if (isRunning && activePhantoms.contains(bot) && bot.isOnline() && bot.isDead())
+							{
+								if (PhantomConfig.CHAT_ENABLED)
+								{
+									PhantomChat.botReply(bot, null, PhantomChat.pickDeathMessage(), false);
+								}
+							}
+						}, Rnd.get(4000, 10000));
+					}
+					ThreadPool.schedule(() ->
+					{
+						try
+						{
+							if (isRunning && activePhantoms.contains(bot) && bot.isOnline())
+							{
+								teleportPhantomToTown(bot);
+								bot.doRevive();
+								bot.setCurrentHp(bot.getMaxHp());
+								bot.setCurrentMp(bot.getMaxMp());
+								bot.broadcastUserInfo();
+								PhantomState.MP_RECOVERY_STATE.put(bot.getObjectId(), false);
+							}
+						}
+						finally
+						{
+							PhantomState.REVIVING_PHANTOMS.remove(bot.getObjectId());
+						}
+					}, Rnd.get(15000, 25000));
+				}
+			}
+			catch (Exception e)
+			{
+				PhantomManager.logException(bot.getName(), "Error en bucle IA", e);
+				e.printStackTrace();
+			}
+			finally
+			{
+				startPhantomAI(bot);
+			}
+		}, Rnd.get(3000, 6000)); // Cadencia irregular: un tick fijo sincroniza las decisiones de todos los phantoms.
+	}
+	
+	private static void traceAi(Player bot, String message)
+	{
+		long now = System.currentTimeMillis();
+		long last = PhantomState.LAST_AI_TRACE.getOrDefault(bot.getObjectId(), 0L);
+		if ((now - last) >= 15000L)
+		{
+			PhantomState.LAST_AI_TRACE.put(bot.getObjectId(), now);
+			PhantomManager.logToFile(bot.getName(), "AI " + message);
+		}
+	}
+}

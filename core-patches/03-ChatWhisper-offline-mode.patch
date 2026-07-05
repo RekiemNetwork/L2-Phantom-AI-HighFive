@@ -1,0 +1,15 @@
+diff --git a/dist/game/data/scripts/handlers/chat/channels/ChatWhisper.java b/dist/game/data/scripts/handlers/chat/channels/ChatWhisper.java
+index 7e48d251ea8..0a2b1a6097a 100644
+--- a/dist/game/data/scripts/handlers/chat/channels/ChatWhisper.java
++++ b/dist/game/data/scripts/handlers/chat/channels/ChatWhisper.java
+@@ -99,8 +99,9 @@ public class ChatWhisper implements IChatHandler
+ 				return;
+ 			}
+ 			
+-			if ((receiver.getClient() == null) || receiver.getClient().isDetached())
++			if (((receiver.getClient() == null) || receiver.getClient().isDetached()) && receiver.isInStoreMode())
+ 			{
++				// Solo los vendedores offline (tienda) avisan; un jugador online sin cliente recibe el whisper con normalidad.
+ 				activeChar.sendMessage("Player is in offline mode.");
+ 				return;
+ 			}

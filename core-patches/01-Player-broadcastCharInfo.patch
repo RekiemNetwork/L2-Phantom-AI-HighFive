@@ -1,0 +1,15 @@
+diff --git a/java/org/l2jmobius/gameserver/model/actor/Player.java b/java/org/l2jmobius/gameserver/model/actor/Player.java
+index ecb88462fc8..210547370cd 100644
+--- a/java/org/l2jmobius/gameserver/model/actor/Player.java
++++ b/java/org/l2jmobius/gameserver/model/actor/Player.java
+@@ -4283,8 +4283,8 @@ public class Player extends Playable
+ 	
+ 	public void broadcastCharInfo()
+ 	{
+-		// Client is disconnected.
+-		if (isOnlineInt() == 0)
++		// Do not broadcast for logged out players. Clientless online players must still broadcast to observers.
++		if (!isOnline())
+ 		{
+ 			return;
+ 		}
