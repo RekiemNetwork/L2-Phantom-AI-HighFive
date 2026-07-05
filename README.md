@@ -1,54 +1,66 @@
-# L2 Phantom AI — Port a High Five (Chronicle 2.6)
+# L2 Phantom AI — Port para High Five (Chronicle 2.6)
 
-Port funcional del sistema **L2 Phantom AI** de MiaCodeWEB a **L2J Mobius CT 2.6 High Five**.
+Port funcional do sistema **L2 Phantom AI** para **L2J Mobius CT 2.6 High Five**.
 
-> **Sistema original y autoría:** **Cristian Barboza — MiaCodeWEB** ([miacodeweb.com](https://miacodeweb.com)).
-> Este port es una adaptación a High Five realizada por **Rekiem Games Network**, sobre su sistema original de Mobius Essence RoseVain.
-> El crédito a MiaCodeWEB está visible in-game (banner de arranque del GameServer y pie del panel `.pmenu`).
-
-Cristian: aquí tienes la versión HF terminada y funcionando. Está entera, probada in-game y con documentación de todo lo que hubo que tocar. Úsala como quieras — si te sirve publicarla, integrarla o lo que sea, es tuya.
+> **Sistema original e autoria:** **Cristian Barboza — MiaCodeWEB** ([miacodeweb.com](https://miacodeweb.com)).
+> Este port é uma adaptação para High Five feita pela **Rekiem Games Network**, **com a permissão do autor**, sobre o sistema original de Mobius Essence RoseVain.
+> O crédito ao MiaCodeWEB está visível in-game (banner de inicialização do GameServer e rodapé do painel `.pmenu`).
+>
+> Projetos originais do autor:
+> - Mobius Essence (RoseVain): https://www.l2jbrasil.com/topic/150633-mod-l2-phantom-ai-manager-bots-inteligentes-geodata-fix-gemini-ai-l2j-mobius-essence-rosevain/
+> - aCis 409: https://www.l2jbrasil.com/topic/150725-mod-l2-phantom-ai-manager-bots-inteligentes-gemini-ai-l2j-acis-l2jacis-409/
+> - GitHub: https://github.com/miacodeweb/L2-Phantom-AI
 
 ---
 
-## Qué es esto
+## O que é
 
-Tu sistema Phantom AI portado y validado en High Five: los phantoms nacen, levean por spots reales del datapack, se equipan por grado, farmean, hacen PvP/PK entre ellos, chatean, mueren y reviven — todo client-less (`Player.create()/load()` sin `GameClient`, cuenta `phantom_ai`), gestionado desde `.pmenu`.
+Jogadores **phantom** (bots) autônomos que fazem o servidor parecer vivo: nascem, evoluem em spots reais do datapack, se equipam por grade, farmam, usam skills, fazem PvP/PK entre si, conversam, morrem e revivem. São personagens reais do banco de dados — **client-less** (`Player.create()/load()` sem `GameClient`, conta `phantom_ai`) — e por isso **não interferem com sistemas HWID / anti-multiconta** baseados em `EnterWorld`.
 
-Sobre tu base añadimos bastante para dejarlo listo para producción; lo tienes detallado en [`PORT_NOTES.md`](PORT_NOTES.md) separando **lo que es tuyo original** de **lo que añadió Rekiem**, por si quieres quedarte solo con una parte.
+Tudo é gerenciado in-game pelo painel de GM (`.pmenu`), sem precisar digitar comandos. O gerenciador de população inicia sozinho no boot do GameServer.
 
-## Estructura
+O que este port adicionou sobre o sistema original está detalhado em [`PORT_NOTES.md`](PORT_NOTES.md), que separa os **recursos originais do autor** dos **recursos adicionados no port**.
+
+## Estrutura
 
 ```
-data/scripts/custom/PhantomManager/   ← los 14 scripts del datapack (compilan en el boot del GS)
-config/Custom/PhantomPlayers.xml       ← persistencia de IDs de phantoms (vacío al empezar)
-core-patches/                          ← 3 parches al CORE del servidor (OBLIGATORIOS, ver abajo)
-PORT_NOTES.md                          ← mapeo Essence→HF, detalle de cambios, qué es de quién
+data/scripts/custom/PhantomManager/   ← os 14 scripts do datapack (compilam no boot do GS)
+config/Custom/PhantomPlayers.xml       ← persistência dos IDs de phantoms (vazio no início)
+core-patches/                          ← 3 patches ao CORE do servidor (OBRIGATÓRIOS, ver abaixo)
+PORT_NOTES.md                          ← mapeamento Essence→HF, detalhe das mudanças, o que é de quem
 ```
 
-## Instalación rápida
+## Instalação
 
-1. Copia `data/scripts/custom/PhantomManager/` a tu `dist/game/data/scripts/custom/`.
-2. Copia `config/Custom/PhantomPlayers.xml` a tu `dist/game/config/Custom/`.
-3. **Aplica los 3 parches de `core-patches/`** (imprescindibles, ver siguiente sección).
-4. Rebuild del GameServer + reinicia.
-5. Con un GM: `.pmenu` → crear/gestionar phantoms. (El gestor de población arranca solo en el boot.)
+1. Copie `data/scripts/custom/PhantomManager/` para o seu `dist/game/data/scripts/custom/`.
+2. Copie `config/Custom/PhantomPlayers.xml` para o seu `dist/game/config/Custom/`.
+3. **Aplique os 3 patches de `core-patches/`** (imprescindíveis, ver seção abaixo).
+4. Recompile o GameServer e reinicie.
+5. Com um GM: `.pmenu` → criar/gerenciar phantoms.
 
-## ⚠️ Los 3 parches al core son OBLIGATORIOS
+## ⚠️ Os 3 patches ao core são OBRIGATÓRIOS
 
-Un `Player` sin `GameClient` rompe supuestos del core que asumen que hubo un `EnterWorld` o que hay cliente. Sin estos 3 parches el sistema **compila pero se comporta mal** (daño que no se aplica, efectos visuales que no se ven, mensajes que delatan a los bots):
+Um `Player` sem `GameClient` quebra suposições do core que assumem um `EnterWorld` ou a existência de cliente. Sem estes 3 patches, o sistema **compila mas se comporta mal** (dano que não aplica, efeitos visuais que não aparecem, mensagens que denunciam os bots):
 
-| Parche | Fichero | Qué arregla |
+| Patch | Arquivo | O que corrige |
 |---|---|---|
-| `01-Player-broadcastCharInfo` | `Player.java` | `broadcastCharInfo()` descartaba **todas** las actualizaciones visuales en vivo de players sin cliente (karma, buffs/debuffs, cambios de equipo). Guard `isOnlineInt()==0` → `!isOnline()`. |
-| `02-Q00255_Tutorial-onKill-nullguard` | `Q00255_Tutorial.java` | NPE por cada mob de tutorial que mata un phantom (no tienen quest state). Null-guard. |
-| `03-ChatWhisper-offline-mode` | `ChatWhisper.java` | Susurrar a un phantom devolvía *"Player is in offline mode."* (delator). Limitado a vendedores offline reales. |
+| `01-Player-broadcastCharInfo` | `Player.java` | `broadcastCharInfo()` descartava **todas** as atualizações visuais em tempo real de players sem cliente (karma, buffs/debuffs, troca de equipamento). Guard `isOnlineInt()==0` → `!isOnline()`. |
+| `02-Q00255_Tutorial-onKill-nullguard` | `Q00255_Tutorial.java` | NPE a cada mob de tutorial morto por um phantom (não têm quest state). Null-guard. |
+| `03-ChatWhisper-offline-mode` | `ChatWhisper.java` | Sussurrar a um phantom retornava *"Player is in offline mode."* (denunciava). Limitado aos vendedores offline reais. |
 
-Los tres son defectos genéricos de cualquier sistema de fake players client-less en Mobius, no específicos de este proyecto — de hecho son candidatos a contribución upstream.
+Os três são defeitos genéricos de qualquer sistema de fake players client-less no Mobius, não específicos deste projeto — inclusive candidatos a contribuição upstream.
 
-## Contacto
+## Testado
 
-Port por Rekiem Games Network. Sistema original de **MiaCodeWEB** — [miacodeweb.com](https://miacodeweb.com) · contacto@miacodeweb.com
+- L2J Mobius CT 2.6 High Five, JDK 25, in-game.
+- Teste de carga informal: ~1000 phantoms ativos em VPS 12GB/4-cores → CPU 53–73%, 0 erros.
+
+## Créditos
+
+Sistema original **L2 Phantom AI Manager** por **MiaCodeWEB — Cristian Barboza** ([miacodeweb.com](https://miacodeweb.com) · contacto@miacodeweb.com). Port para High Five por **Rekiem Games Network**, com permissão do autor.
+
+## Screenshots
+
 <img width="325" height="415" alt="image" src="https://github.com/user-attachments/assets/d2bd80be-45c8-4598-8ea3-11d51eba8e0d" />
 <img width="334" height="419" alt="image" src="https://github.com/user-attachments/assets/caebe611-d456-4db6-86bc-c15b8657d3c6" />
 <img width="329" height="423" alt="image" src="https://github.com/user-attachments/assets/65770ad0-7d9a-4d9a-b036-3e63fa0daea7" />
-
