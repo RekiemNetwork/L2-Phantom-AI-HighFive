@@ -48,3 +48,7 @@ Los tres son defectos genéricos de cualquier sistema de fake players client-les
 ## Contacto
 
 Port por Rekiem Games Network. Sistema original de **MiaCodeWEB** — [miacodeweb.com](https://miacodeweb.com) · contacto@miacodeweb.com
+<img width="325" height="415" alt="image" src="https://github.com/user-attachments/assets/d2bd80be-45c8-4598-8ea3-11d51eba8e0d" />
+<img width="334" height="419" alt="image" src="https://github.com/user-attachments/assets/caebe611-d456-4db6-86bc-c15b8657d3c6" />
+<img width="329" height="423" alt="image" src="https://github.com/user-attachments/assets/65770ad0-7d9a-4d9a-b036-3e63fa0daea7" />
+
