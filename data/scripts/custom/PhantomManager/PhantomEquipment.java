@@ -1,5 +1,7 @@
 package custom.PhantomManager;
 
+import java.util.List;
+
 import org.l2jmobius.commons.util.Rnd;
 import org.l2jmobius.gameserver.data.sql.CharSummonTable;
 import org.l2jmobius.gameserver.model.World;
@@ -82,7 +84,13 @@ public class PhantomEquipment
 			{
 				continue;
 			}
-			for (AbstractEffect effect : skill.getEffects(EffectScope.GENERAL))
+			// getEffects devuelve NULL (no lista vacia) para skills sin efectos en este scope.
+			final List<AbstractEffect> effects = skill.getEffects(EffectScope.GENERAL);
+			if (effects == null)
+			{
+				continue;
+			}
+			for (AbstractEffect effect : effects)
 			{
 				if ((effect != null) && "Summon".equals(effect.getClass().getSimpleName()))
 				{
