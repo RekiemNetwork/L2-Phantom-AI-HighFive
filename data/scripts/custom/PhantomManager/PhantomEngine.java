@@ -17,6 +17,7 @@ import org.l2jmobius.gameserver.model.Location;
 import org.l2jmobius.gameserver.model.World;
 import org.l2jmobius.gameserver.model.actor.Player;
 import org.l2jmobius.gameserver.model.actor.enums.player.TeleportWhereType;
+import org.l2jmobius.gameserver.network.GameClient;
 import org.l2jmobius.gameserver.network.serverpackets.ValidateLocation;
 
 public class PhantomEngine
@@ -224,6 +225,40 @@ public class PhantomEngine
 		}
 	}
 	
+	/**
+	 * Borrado total: desconecta todos los phantoms, elimina de la BD todos los personajes de la cuenta de phantoms (incluidos huerfanos fuera del XML) y vacia el pool XML.
+	 * @param gm el GM que ordena el borrado
+	 * @return cuantos personajes se eliminaron de la BD
+	 */
+	public static synchronized int deleteAllPhantoms(Player gm)
+	{
+		PhantomManager.startLogSession("PHANTOM_DELETE_ALL");
+		stopSystem(null);
+
+		int deleted = 0;
+		for (int charId : PhantomFactory.getAllPhantomCharIds())
+		{
+			try
+			{
+				// Mismo borrado en cascada que usa el cliente al eliminar un personaje (items, skills, subclases, etc.).
+				GameClient.deleteCharByObjId(charId);
+				deleted++;
+			}
+			catch (Exception e)
+			{
+				PhantomManager.logException("DELETE_ALL", "Error borrando charId " + charId, e);
+			}
+		}
+
+		PhantomConfig.clearAllIds();
+		PhantomManager.logToFile("SYSTEM", "Borrado total: " + deleted + " personajes eliminados de la BD y pool XML vaciado.");
+		if (gm != null)
+		{
+			gm.sendMessage(">>> Se eliminaron " + deleted + " phantoms de la BD. Pool XML vaciado.");
+		}
+		return deleted;
+	}
+
 	public static Player getPhantomByName(String name)
 	{
 		return activePhantoms.stream().filter(p -> p.getName().equalsIgnoreCase(name)).findFirst().orElse(null);

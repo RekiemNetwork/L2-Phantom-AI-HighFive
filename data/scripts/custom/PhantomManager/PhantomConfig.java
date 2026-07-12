@@ -45,6 +45,7 @@ public class PhantomConfig
 	public static volatile boolean PK_ENABLED = true; // Permite que el rasgo PK se asigne/manifieste. Con OFF: solo duelos flageados entre phantoms; los rojos actuales se limpian solos farmeando.
 	public static volatile boolean COUNT_ONLINE_WEB = true; // Fuerza online=1 en BD al loguear: sin cliente, isOnlineInt()=0 escribiria 0 y la web los mostraria offline.
 	public static volatile int POPULATION_MAX = 60; // Tope absoluto de phantoms online a la vez (editable en .pmenu, persistido). OJO: maximo probado con metricas sanas = 94; subir por escalones vigilando CPU/RAM.
+	public static volatile int LOG_RETENTION_DAYS = 7; // Dias que se conservan los logs TXT de phantoms: los mas viejos se autoborran al abrir una sesion de logs (persistido en PhantomAI.ini).
 	public static final int POPULATION_TICK_MS = 90000; // Cada cuanto revisa el gestor.
 	public static final int POPULATION_STEP = 6; // Cuantos conecta/desconecta como maximo por revision (entrada/salida gradual).
 	public static final long SESSION_MIN_MS = 120L * 60000L; // Duracion minima de sesion (2h).
@@ -176,6 +177,14 @@ public class PhantomConfig
 			{
 				// Valor corrupto: se conserva el default.
 			}
+			try
+			{
+				LOG_RETENTION_DAYS = Math.max(1, Integer.parseInt(props.getProperty("DiasRetencionLogs", String.valueOf(LOG_RETENTION_DAYS)).trim()));
+			}
+			catch (NumberFormatException e)
+			{
+				// Valor corrupto: se conserva el default.
+			}
 			System.out.println(">>> [PHANTOM SYSTEM] Tramos de densidad: " + HOURLY_CURVE[0] + "/" + HOURLY_CURVE[1] + "/" + HOURLY_CURVE[2] + "/" + HOURLY_CURVE[3] + "% del pool.");
 		}
 		catch (Exception e)
@@ -198,6 +207,7 @@ public class PhantomConfig
 			props.setProperty("PermitirPK", String.valueOf(PK_ENABLED));
 			props.setProperty("ContarOnlineWeb", String.valueOf(COUNT_ONLINE_WEB));
 			props.setProperty("TopeOnline", String.valueOf(POPULATION_MAX));
+			props.setProperty("DiasRetencionLogs", String.valueOf(LOG_RETENTION_DAYS));
 			props.store(out, "Phantom AI - tramos = % del pool online por franja horaria (0-100); AutoArranque = gestor al boot; ChatBots = habla espontanea");
 		}
 		catch (Exception e)
@@ -428,6 +438,13 @@ public class PhantomConfig
 		return true;
 	}
 	
+	public static synchronized void clearAllIds()
+	{
+		PHANTOM_IDS.clear();
+		// Reescribe el XML como lista vacia en vez de borrar el fichero: mismo efecto (pool a cero) sin el error de fichero no encontrado al arrancar.
+		saveXML();
+	}
+
 	private static synchronized void saveXML()
 	{
 		try

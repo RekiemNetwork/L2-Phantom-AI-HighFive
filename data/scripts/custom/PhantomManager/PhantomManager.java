@@ -1,5 +1,6 @@
 package custom.PhantomManager;
 
+import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.PrintWriter;
@@ -35,8 +36,9 @@ public class PhantomManager extends Script implements IVoicedCommandHandler
 	
 	public PhantomManager()
 	{
-		startLogSession("SERVER_START");
+		// Config primero: la limpieza de logs de startLogSession debe usar DiasRetencionLogs del .ini, no el default.
 		PhantomConfig.init();
+		startLogSession("SERVER_START");
 		VoicedCommandHandler.getInstance().registerHandler(this);
 		PhantomBypass.register();
 		
@@ -60,14 +62,61 @@ public class PhantomManager extends Script implements IVoicedCommandHandler
 	public static void startLogSession(String reason)
 	{
 		_sessionLogFile = "log/PhantomManager-" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")) + ".txt";
+		cleanOldLogs();
 		logToFile("SYSTEM", "Nueva sesion de logs: " + reason);
 	}
-	
+
+	/**
+	 * Autoborra los logs TXT de phantoms con mas de {@code PhantomConfig.LOG_RETENTION_DAYS} dias (ficheros de sesion y la generacion rotada del stream continuo).
+	 */
+	private static void cleanOldLogs()
+	{
+		try
+		{
+			final long cutoff = System.currentTimeMillis() - (PhantomConfig.LOG_RETENTION_DAYS * 86400000L);
+			final File[] files = new File("log").listFiles((dir, name) -> (name.startsWith("PhantomManager-") && name.endsWith(".txt")) || name.equals("PhantomManager.txt.1"));
+			if (files == null)
+			{
+				return;
+			}
+			int deleted = 0;
+			for (File file : files)
+			{
+				if ((file.lastModified() < cutoff) && file.delete())
+				{
+					deleted++;
+				}
+			}
+			if (deleted > 0)
+			{
+				logToFile("SYSTEM", "Limpieza de logs: " + deleted + " ficheros con mas de " + PhantomConfig.LOG_RETENTION_DAYS + " dias borrados.");
+			}
+		}
+		catch (Exception e)
+		{
+			// La limpieza de logs nunca debe interrumpir el arranque ni una sesion.
+		}
+	}
+
 	public static synchronized void logToFile(String botName, String action)
 	{
 		if (!_debugMode)
 		{
 			return;
+		}
+		try
+		{
+			// Rotacion del stream continuo: al pasar de 50 MB se renombra a .txt.1 (pisando la generacion anterior) y se empieza limpio.
+			final File globalLog = new File("log/PhantomManager.txt");
+			if (globalLog.length() > (50L * 1024 * 1024))
+			{
+				final File rotated = new File("log/PhantomManager.txt.1");
+				rotated.delete();
+				globalLog.renameTo(rotated);
+			}
+		}
+		catch (Exception e)
+		{
 		}
 		try (FileWriter fw = new FileWriter("log/PhantomManager.txt", true);
 			PrintWriter pw = new PrintWriter(fw))

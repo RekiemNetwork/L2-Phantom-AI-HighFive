@@ -1,8 +1,12 @@
 package custom.PhantomManager;
 
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.l2jmobius.commons.database.DatabaseFactory;
 import org.l2jmobius.commons.util.Rnd;
 import org.l2jmobius.gameserver.data.sql.CharInfoTable;
 import org.l2jmobius.gameserver.data.xml.ExperienceData;
@@ -147,6 +151,33 @@ public class PhantomFactory
 		return created;
 	}
 	
+	/**
+	 * Devuelve todos los charId de la cuenta de phantoms leyendo directamente la BD.
+	 * Incluye huerfanos que ya no esten en el pool XML.
+	 * @return lista de charId de la cuenta de phantoms
+	 */
+	public static List<Integer> getAllPhantomCharIds()
+	{
+		final List<Integer> charIds = new ArrayList<>();
+		try (Connection con = DatabaseFactory.getConnection();
+			PreparedStatement ps = con.prepareStatement("SELECT charId FROM characters WHERE account_name=?"))
+		{
+			ps.setString(1, ACCOUNT_NAME);
+			try (ResultSet rs = ps.executeQuery())
+			{
+				while (rs.next())
+				{
+					charIds.add(rs.getInt(1));
+				}
+			}
+		}
+		catch (Exception e)
+		{
+			PhantomManager.logToFile("DELETE_ALL", "Error consultando la cuenta " + ACCOUNT_NAME + ": " + e.getMessage());
+		}
+		return charIds;
+	}
+
 	private static Player createOne(int minLevel, int maxLevel)
 	{
 		try

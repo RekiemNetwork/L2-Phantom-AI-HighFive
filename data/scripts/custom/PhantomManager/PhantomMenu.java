@@ -53,11 +53,11 @@ public class PhantomMenu
 		html.append("<tr><td width=135><center>").append(button("Detener TODO", "phantom_stop_all", 125)).append("</center></td>");
 		html.append("<td width=135><center>").append(button("Recargar XML", "phantom_reload_xml", 125)).append("</center></td></tr>");
 
-		header(html, "Crear phantoms");
+		header(html, "Crear phantoms (nivel 1)");
 		html.append("<tr><td width=135><center>").append(button("Crear 10", "phantom_create_10", 125)).append("</center></td>");
 		html.append("<td width=135><center>").append(button("Crear 25", "phantom_create_25", 125)).append("</center></td></tr>");
 		html.append("<tr><td width=135><center>").append(button("Crear 50", "phantom_create_50", 125)).append("</center></td>");
-		html.append("<td width=135><center>").append(button("Crear 100", "phantom_create 100", 125)).append("</center></td></tr>");
+		html.append("<td width=135><center>").append(button("Crear 100", "phantom_create_100", 125)).append("</center></td></tr>");
 		html.append("</table></center>");
 
 		html.append("<center><table width=270>");
@@ -83,7 +83,38 @@ public class PhantomMenu
 		html.append("<td width=135><center>").append(button("Web online: " + (PhantomConfig.COUNT_ONLINE_WEB ? "ON" : "OFF"), "phantom_online_toggle", 125)).append("</center></td></tr>");
 		html.append("</table></center><br>");
 
+		html.append("<center><table width=270>");
+		header(html, "Zona peligrosa");
+		html.append("<tr><td width=270><center>").append(button("ELIMINAR TODO (BD + XML)", "phantom_delete_all", 200)).append("</center></td></tr>");
+		html.append("</table></center><br>");
+
 		html.append("<center><font color=\"777777\">L2 Phantom AI by MiaCodeWEB (miacodeweb.com)</font></center>");
+		html.append("</body></html>");
+
+		NpcHtmlMessage msg = new NpcHtmlMessage();
+		msg.setHtml(html.toString());
+		player.sendPacket(msg);
+	}
+
+	public static void showDeleteConfirm(Player player)
+	{
+		if ((player == null) || !player.isGM())
+		{
+			return;
+		}
+
+		final int dbCount = PhantomFactory.getAllPhantomCharIds().size();
+		StringBuilder html = new StringBuilder();
+		html.append("<html><title>Phantom Manager - Borrado total</title><body>");
+		html.append("<center><font color=\"FF5555\">ATENCION: borrado irreversible</font></center><br>");
+		html.append("<center><table width=270>");
+		html.append("<tr><td width=170>Phantoms online:</td><td width=100>").append(PhantomEngine.activePhantoms.size()).append("</td></tr>");
+		html.append("<tr><td width=170>En pool XML:</td><td width=100>").append(PhantomConfig.PHANTOM_IDS.size()).append("</td></tr>");
+		html.append("<tr><td width=170>En BD (cuenta phantom_ai):</td><td width=100>").append(dbCount).append("</td></tr>");
+		html.append("</table></center><br>");
+		html.append("<center>Se desconectaran todos los phantoms, se borraran los ").append(dbCount).append(" personajes de la BD (items, skills, subclases...) y se vaciara el pool XML.</center><br>");
+		html.append("<center>").append(button("SI, eliminar todo", "phantom_delete_all_confirm", 160)).append("</center><br>");
+		html.append("<center>").append(button("Cancelar", "phantom_menu", 160)).append("</center>");
 		html.append("</body></html>");
 
 		NpcHtmlMessage msg = new NpcHtmlMessage();

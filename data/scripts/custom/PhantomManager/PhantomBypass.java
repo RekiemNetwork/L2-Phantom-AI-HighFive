@@ -22,7 +22,10 @@ public class PhantomBypass implements IBypassHandler
 		"phantom_create_10",
 		"phantom_create_25",
 		"phantom_create_50",
+		"phantom_create_100",
 		"phantom_create",
+		"phantom_delete_all",
+		"phantom_delete_all_confirm",
 		"phantom_go",
 		"phantom_bring",
 		"phantom_kill",
@@ -60,19 +63,36 @@ public class PhantomBypass implements IBypassHandler
 			return false;
 		}
 
+		// Los lotes fijos crean todo a nivel 1: para niveles variados esta el boton de piramide.
 		if (command.equals("phantom_create_10"))
 		{
-			PhantomEngine.createAndStart(10, player);
+			PhantomEngine.createAndStart(10, 1, 1, player);
 			return true;
 		}
 		else if (command.equals("phantom_create_25"))
 		{
-			PhantomEngine.createAndStart(25, player);
+			PhantomEngine.createAndStart(25, 1, 1, player);
 			return true;
 		}
 		else if (command.equals("phantom_create_50"))
 		{
-			PhantomEngine.createAndStart(50, player);
+			PhantomEngine.createAndStart(50, 1, 1, player);
+			return true;
+		}
+		else if (command.equals("phantom_create_100"))
+		{
+			PhantomEngine.createAndStart(100, 1, 1, player);
+			return true;
+		}
+		else if (command.equals("phantom_delete_all"))
+		{
+			PhantomMenu.showDeleteConfirm(player);
+			return true;
+		}
+		else if (command.equals("phantom_delete_all_confirm"))
+		{
+			PhantomEngine.deleteAllPhantoms(player);
+			PhantomMenu.showMenu(player);
 			return true;
 		}
 		else if (command.startsWith("phantom_create "))
