@@ -320,6 +320,17 @@ public class PhantomConfig
 		{ 2478, 563, 924, 862, 893 }, // A: Tallum Gloves + Dark Crystal Boots + juego Majestic
 		{ 6375, 6376, 920, 858, 889 } // S: Imperial Crusader + juego Tateossian
 	};
+	// Sets de arma + torso para KAMAEL: la raza no tiene mesh grafico para armaduras heavy ONEPIECE (Full/Doom/Tallum Plate se ven como cuerpo desnudo).
+	// Light armor con chest+legs SEPARADOS que si renderiza en Kamael (guantes/botas/joyeria van igual por EXTRA_GEAR, esos si tienen mesh).
+	public static final int[][] KAMAEL_GEAR_PACKS =
+	{
+		{ 1, 22, 28 }, // sin grado: Short Sword + Leather Shirt + Pants
+		{ 69, 395, 417 }, // D: Bastard Sword + Manticore Skin (light)
+		{ 72, 400, 420 }, // C: Stormbringer + Theca Leather (light)
+		{ 175, 2398, 2403 }, // B: Art of Battle Axe + Blue Wolf (light)
+		{ 80, 2400, 2405 }, // A: Tallum Blade + Tallum Leather (light)
+		{ 6580, 6373, 6374 } // S: Tallum Blade*DLE + Imperial Crusader (chest+legs separados, renderiza)
+	};
 	// Pociones de vida: SOLO las que venden las tiendas (verificado en buylists: 1060 en 30 tiendas, 1061 en 25; la 727 no la vende nadie).
 	public static int potionForLevel(int level)
 	{

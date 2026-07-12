@@ -5,6 +5,7 @@ import java.util.List;
 
 import org.l2jmobius.commons.util.Rnd;
 import org.l2jmobius.gameserver.model.actor.Player;
+import org.l2jmobius.gameserver.model.actor.enums.creature.Race;
 import org.l2jmobius.gameserver.model.actor.enums.player.PlayerClass;
 import org.l2jmobius.gameserver.model.item.enums.ItemProcessType;
 import org.l2jmobius.gameserver.model.item.instance.Item;
@@ -104,10 +105,10 @@ public class PhantomProgression
 			}
 			bot.broadcastUserInfo();
 		}
-		else if ((bot.getActiveWeaponInstance() == null) || (bot.getInventory().getPaperdollItem(Inventory.PAPERDOLL_CHEST) == null))
+		else if ((bot.getActiveWeaponInstance() == null) || (bot.getInventory().getPaperdollItem(Inventory.PAPERDOLL_CHEST) == null) || wearsLegacyKamaelPlate(bot))
 		{
-			// Piezas perdidas (p.ej. drop de karma al morir siendo PK): repone el pack del grado actual.
-			PhantomManager.logToFile(bot.getName(), "Equipo incompleto detectado. Reponiendo pack del grado " + targetGrade + ".");
+			// Pieza perdida (drop de karma al morir siendo PK) o Kamael com armadura onepiece sem mesh: repone o pack do grau.
+			PhantomManager.logToFile(bot.getName(), "Equipo a reponer (incompleto o armadura sin mesh Kamael). Pack grado " + targetGrade + ".");
 			equipPack(bot, targetGrade, PhantomState.GEAR_PACK.getOrDefault(bot.getObjectId(), 0));
 			bot.broadcastUserInfo();
 		}
@@ -121,10 +122,37 @@ public class PhantomProgression
 		}
 	}
 
+	private static boolean wearsLegacyKamaelPlate(Player bot)
+	{
+		// getPlayerClass().getRace() consulta el enum de la clase (fiable); bot.getRace() usa el template del objeto, que en phantoms promocionados puede quedar inconsistente.
+		if (bot.getPlayerClass().getRace() != Race.KAMAEL)
+		{
+			return false;
+		}
+		final Item chest = bot.getInventory().getPaperdollItem(Inventory.PAPERDOLL_CHEST);
+		// 356 Full Plate / 2381 Doom Plate / 2382 Tallum Plate: onepiece heavy sem mesh Kamael (renderiza como corpo nu).
+		return (chest != null) && ((chest.getId() == 356) || (chest.getId() == 2381) || (chest.getId() == 2382));
+	}
+
 	private static void equipPack(Player bot, int grade, int packIndex)
 	{
-		final int[][] packs = bot.isMageClass() ? PhantomConfig.MAGE_GEAR_PACKS[grade] : PhantomConfig.FIGHTER_GEAR_PACKS[grade];
-		final int[] gearSet = packs[Math.max(0, Math.min(packIndex, packs.length - 1))];
+		final int[] gearSet;
+		if (bot.getPlayerClass().getRace() == Race.KAMAEL)
+		{
+			// Los Kamael solo renderizan light armor con chest+legs separados; las heavy onepiece se ven como cuerpo desnudo.
+			// equipItem del chest light NO reemplaza un onepiece fullbody ya equipado (el light quedaria sin poner y el limpiador lo borraria): desequipar el viejo primero.
+			final Item oldChest = bot.getInventory().getPaperdollItem(Inventory.PAPERDOLL_CHEST);
+			if ((oldChest != null) && ((oldChest.getId() == 356) || (oldChest.getId() == 2381) || (oldChest.getId() == 2382)))
+			{
+				bot.getInventory().unEquipItemInSlot(Inventory.PAPERDOLL_CHEST);
+			}
+			gearSet = PhantomConfig.KAMAEL_GEAR_PACKS[grade];
+		}
+		else
+		{
+			final int[][] packs = bot.isMageClass() ? PhantomConfig.MAGE_GEAR_PACKS[grade] : PhantomConfig.FIGHTER_GEAR_PACKS[grade];
+			gearSet = packs[Math.max(0, Math.min(packIndex, packs.length - 1))];
+		}
 		for (int itemId : gearSet)
 		{
 			giveAndEquip(bot, itemId, false);
