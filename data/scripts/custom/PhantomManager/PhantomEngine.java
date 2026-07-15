@@ -4,6 +4,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.l2jmobius.commons.database.DatabaseFactory;
 import org.l2jmobius.commons.threads.ThreadPool;
@@ -15,8 +16,12 @@ import org.l2jmobius.gameserver.data.xml.MapRegionData;
 import org.l2jmobius.gameserver.geoengine.GeoEngine;
 import org.l2jmobius.gameserver.model.Location;
 import org.l2jmobius.gameserver.model.World;
+import org.l2jmobius.gameserver.model.WorldObject;
+import org.l2jmobius.gameserver.model.actor.Creature;
 import org.l2jmobius.gameserver.model.actor.Player;
 import org.l2jmobius.gameserver.model.actor.enums.player.TeleportWhereType;
+import org.l2jmobius.gameserver.model.actor.instance.Monster;
+import org.l2jmobius.gameserver.model.item.instance.Item;
 import org.l2jmobius.gameserver.network.GameClient;
 import org.l2jmobius.gameserver.network.serverpackets.ValidateLocation;
 
@@ -24,6 +29,7 @@ public class PhantomEngine
 {
 	public static final List<Player> activePhantoms = new CopyOnWriteArrayList<>();
 	public static volatile boolean isRunning = false;
+	private static final AtomicBoolean _deleteAllInProgress = new AtomicBoolean(false);
 	
 	public static void startSystem(Player gm)
 	{
@@ -103,6 +109,11 @@ public class PhantomEngine
 	 */
 	public static synchronized int bringOnline(int count)
 	{
+		if (_deleteAllInProgress.get())
+		{
+			// Durante el borrado total (que no toma el monitor de clase durante su drenaje/borrado en BD) el gestor no debe reconectar phantoms: sus filas se estan borrando y quedarian en mundo sin registro en BD.
+			return 0;
+		}
 		if (!isRunning)
 		{
 			PhantomManager.startLogSession("PHANTOM_POPULATION");
@@ -230,33 +241,69 @@ public class PhantomEngine
 	 * @param gm el GM que ordena el borrado
 	 * @return cuantos personajes se eliminaron de la BD
 	 */
-	public static synchronized int deleteAllPhantoms(Player gm)
+	public static int deleteAllPhantoms(Player gm)
 	{
-		PhantomManager.startLogSession("PHANTOM_DELETE_ALL");
-		stopSystem(null);
-
-		int deleted = 0;
-		for (int charId : PhantomFactory.getAllPhantomCharIds())
+		// Sin synchronized: el drenaje + borrado masivo puede durar segundos y bloquearia al gestor de poblacion y a todos los comandos GM que comparten el monitor de clase. El guard atomico evita dos borrados simultaneos; solo stopSystem toma el monitor.
+		if (!_deleteAllInProgress.compareAndSet(false, true))
 		{
+			if (gm != null)
+			{
+				gm.sendMessage("Ya hay un borrado total en curso.");
+			}
+			return 0;
+		}
+		try
+		{
+			PhantomManager.startLogSession("PHANTOM_DELETE_ALL");
+			stopSystem(null);
 			try
 			{
-				// Mismo borrado en cascada que usa el cliente al eliminar un personaje (items, skills, subclases, etc.).
-				GameClient.deleteCharByObjId(charId);
-				deleted++;
+				// Drenaje: margen para que los ticks en vuelo (corren en ms) terminen antes de borrar en BD — un INSERT tardio (skill/item) re-crearia filas del personaje ya borrado.
+				Thread.sleep(1500);
+			}
+			catch (InterruptedException e)
+			{
+				Thread.currentThread().interrupt();
+			}
+
+			int deleted = 0;
+			try (Connection con = DatabaseFactory.getConnection();
+				PreparedStatement ps = con.prepareStatement("DELETE FROM character_summons WHERE ownerId=?"))
+			{
+				for (int charId : PhantomFactory.getAllPhantomCharIds())
+				{
+					try
+					{
+						// Mismo borrado en cascada que usa el cliente al eliminar un personaje (items, skills, subclases, etc.).
+						GameClient.deleteCharByObjId(charId);
+						// El cascade del core no cubre character_summons y los phantoms invocadores persisten ahi su servitor al desconectar.
+						ps.setInt(1, charId);
+						ps.execute();
+						deleted++;
+					}
+					catch (Exception e)
+					{
+						PhantomManager.logException("DELETE_ALL", "Error borrando charId " + charId, e);
+					}
+				}
 			}
 			catch (Exception e)
 			{
-				PhantomManager.logException("DELETE_ALL", "Error borrando charId " + charId, e);
+				PhantomManager.logException("DELETE_ALL", "Error en el borrado total", e);
 			}
-		}
 
-		PhantomConfig.clearAllIds();
-		PhantomManager.logToFile("SYSTEM", "Borrado total: " + deleted + " personajes eliminados de la BD y pool XML vaciado.");
-		if (gm != null)
-		{
-			gm.sendMessage(">>> Se eliminaron " + deleted + " phantoms de la BD. Pool XML vaciado.");
+			PhantomConfig.clearAllIds();
+			PhantomManager.logToFile("SYSTEM", "Borrado total: " + deleted + " personajes eliminados de la BD y pool XML vaciado.");
+			if (gm != null)
+			{
+				gm.sendMessage(">>> Se eliminaron " + deleted + " phantoms de la BD. Pool XML vaciado.");
+			}
+			return deleted;
 		}
-		return deleted;
+		finally
+		{
+			_deleteAllInProgress.set(false);
+		}
 	}
 
 	public static Player getPhantomByName(String name)
@@ -491,7 +538,8 @@ public class PhantomEngine
 	
 	private static void teleportPhantomToTown(Player phantom)
 	{
-		Location point = MapRegionData.getInstance().getTeleToLocation(phantom, TeleportWhereType.TOWN);
+		// Antes del nivel 20 revive en su aldea natal: el pueblo mas cercano del MapRegion podia ser el de otra raza (muerte durante una deriva) y lo dejaba asentado en zona ajena.
+		Location point = (phantom.getLevel() < PhantomHuntingSpots.RACIAL_AREA_MAX_LEVEL) ? phantom.getTemplate().getCreationPoint() : MapRegionData.getInstance().getTeleToLocation(phantom, TeleportWhereType.TOWN);
 		Location safe = PhantomGeo.getSafeSpawn(point, 150);
 		movePhantomTo(phantom, safe, "Revive en ciudad mas cercana");
 		PhantomState.HUNT_LEVEL_BAND.put(phantom.getObjectId(), -1);
@@ -507,8 +555,9 @@ public class PhantomEngine
 		
 		ThreadPool.schedule(() ->
 		{
-			// El contains() mata los ticks huerfanos: tras .pstop + .pstart rapido, el tick del Player borrado seguia vivo y lo re-spawneaba como fantasma duplicado del charId.
-			if (!isRunning || !activePhantoms.contains(bot))
+			// Mata los ticks huerfanos: tras .pstop + .pstart rapido, el tick del Player borrado seguia vivo y lo re-spawneaba como fantasma duplicado del charId.
+			// Comparacion por IDENTIDAD y no contains(): WorldObject.equals compara objectId, y si el mismo charId se reconecta dentro de la ventana del tick pendiente, el tick de la instancia VIEJA veria a la nueva y seguiria vivo (dos cadenas de IA para el mismo personaje).
+			if (!isRunning || !isActiveInstance(bot))
 			{
 				return;
 			}
@@ -524,9 +573,13 @@ public class PhantomEngine
 				{
 					traceAi(bot, "tick online=" + bot.isOnline() + " spawned=" + bot.isSpawned() + " moving=" + bot.isMoving() + " casting=" + bot.isCastingNow() + " attacking=" + bot.isAttackingNow() + " loc=" + bot.getX() + "," + bot.getY() + "," + bot.getZ());
 					bot.broadcastPacket(new ValidateLocation(bot)); // Los observadores no validan la posicion de un jugador sin cliente; resincroniza para que los efectos (aura de level-up) caigan sobre el personaje.
-					PhantomEquipment.applyBasicBuffs(bot);
-					PhantomEquipment.checkProgression(bot);
-					PhantomEquipment.cleanInventory(bot);
+					if (!isEngaged(bot))
+					{
+						// Mantenimiento (buffs, progresion, limpieza) solo fuera de combate: en pelea el tick rapido se dedica a encadenar acciones.
+						PhantomEquipment.applyBasicBuffs(bot);
+						PhantomEquipment.checkProgression(bot);
+						PhantomEquipment.cleanInventory(bot);
+					}
 					PhantomAI.thinkAndFarm(bot);
 				}
 				else if (bot.isDead())
@@ -579,16 +632,89 @@ public class PhantomEngine
 			{
 				startPhantomAI(bot);
 			}
-		}, Rnd.get(3000, 6000)); // Cadencia irregular: un tick fijo sincroniza las decisiones de todos los phantoms.
+		}, nextTickDelay(bot));
+	}
+
+	private static int nextTickDelay(Player bot)
+	{
+		// En combate el bot decide rapido (encadena skills y recoge su loot sin pausas de robot); entre mob y mob mantiene la cadencia relajada e irregular (un tick fijo sincronizaria las decisiones de todos los phantoms).
+		// Blindado: este calculo corre en el finally que re-agenda el tick, y una excepcion aqui mataria la cadena de IA del bot para siempre.
+		try
+		{
+			return (isEngaged(bot) || hasPendingLoot(bot)) ? Rnd.get(900, 1700) : Rnd.get(3000, 6000);
+		}
+		catch (Exception e)
+		{
+			return Rnd.get(3000, 6000);
+		}
+	}
+
+	/**
+	 * Un phantom esta enfrascado cuando pega, castea, recoge o persigue un objetivo vivo. Solo checks baratos (sin escaneos de World): se evalua dos veces por tick.
+	 * @param bot el phantom
+	 * @return {@code true} si esta en plena accion
+	 */
+	private static boolean isEngaged(Player bot)
+	{
+		final Intention intention = bot.getAI().getIntention();
+		if ((intention == Intention.CAST) || (intention == Intention.PICK_UP) || bot.isAttackingNow() || bot.isCastingNow())
+		{
+			return true;
+		}
+		// Lectura UNICA del target: otro hilo puede anularlo entre dos lecturas y el NPE tumbaria el re-agendado.
+		final WorldObject target = bot.getTarget();
+		return (intention == Intention.ATTACK) && (target instanceof Creature) && !((Creature) target).isDead();
+	}
+
+	/**
+	 * Loot pendiente (drops propios protegidos en el suelo o cadaver spoileado sin barrer): merece cadencia rapida aunque el combate haya terminado, porque proteccion y decay se miden en segundos.
+	 * @param bot el phantom
+	 * @return {@code true} si hay botin esperando
+	 */
+	private static boolean hasPendingLoot(Player bot)
+	{
+		for (Item drop : World.getInstance().getVisibleObjectsInRange(bot, Item.class, 400))
+		{
+			if ((drop != null) && drop.isSpawned() && drop.getDropProtection().isProtected() && (drop.getDropProtection().getOwner() == bot))
+			{
+				return true;
+			}
+		}
+		for (Monster corpse : World.getInstance().getVisibleObjectsInRange(bot, Monster.class, 400))
+		{
+			if (corpse.isDead() && corpse.isSweepActive() && (corpse.getSpoilerObjectId() == bot.getObjectId()))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Busca la instancia EXACTA en la lista de activos (identidad, no equals por objectId).
+	 * @param bot la instancia a comprobar
+	 * @return {@code true} si esta instancia concreta sigue activa
+	 */
+	private static boolean isActiveInstance(Player bot)
+	{
+		for (Player p : activePhantoms)
+		{
+			if (p == bot)
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 	
 	private static void traceAi(Player bot, String message)
 	{
+		// Throttle propio (LAST_ENGINE_TRACE): compartir clave con el trace() de PhantomAI hacia que este "tick online=..." (que corre siempre primero) consumiera la ventana de 15s y las trazas de decision no se escribieran nunca.
 		long now = System.currentTimeMillis();
-		long last = PhantomState.LAST_AI_TRACE.getOrDefault(bot.getObjectId(), 0L);
+		long last = PhantomState.LAST_ENGINE_TRACE.getOrDefault(bot.getObjectId(), 0L);
 		if ((now - last) >= 15000L)
 		{
-			PhantomState.LAST_AI_TRACE.put(bot.getObjectId(), now);
+			PhantomState.LAST_ENGINE_TRACE.put(bot.getObjectId(), now);
 			PhantomManager.logToFile(bot.getName(), "AI " + message);
 		}
 	}

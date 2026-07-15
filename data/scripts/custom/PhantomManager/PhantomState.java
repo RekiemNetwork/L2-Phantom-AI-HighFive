@@ -20,6 +20,8 @@ public class PhantomState
 	public static final Map<Integer, Integer> GOAL_LEVEL = new ConcurrentHashMap<>();
 	public static final Map<Integer, Long> NEXT_HUNT_TELEPORT = new ConcurrentHashMap<>();
 	public static final Map<Integer, Long> LAST_AI_TRACE = new ConcurrentHashMap<>();
+	public static final Map<Integer, Long> LAST_ENGINE_TRACE = new ConcurrentHashMap<>(); // Throttle propio del tick del engine: si compartiera clave con LAST_AI_TRACE, el "tick online=..." (que corre siempre primero) consumiria la ventana y las trazas de decision no se escribirian nunca.
+	public static final Map<Integer, Long> SWEEP_LAST_TRY = new ConcurrentHashMap<>(); // Momento del ultimo intento de sweep: limita el ritmo a un intento cada 4s cuando el cast falla (sobrepeso, cadaver viejo), sin ahogar la recogida de drops.
 	public static final Map<Integer, Long> CITY_REST_UNTIL = new ConcurrentHashMap<>();
 	public static final Map<Integer, Long> LAST_SELF_BUFF = new ConcurrentHashMap<>();
 	public static final Map<Integer, Integer> LAST_SKILL_LEARN_LEVEL = new ConcurrentHashMap<>();
@@ -71,6 +73,8 @@ public class PhantomState
 		GOAL_LEVEL.remove(objectId);
 		NEXT_HUNT_TELEPORT.remove(objectId);
 		LAST_AI_TRACE.remove(objectId);
+		LAST_ENGINE_TRACE.remove(objectId);
+		SWEEP_LAST_TRY.remove(objectId);
 		CITY_REST_UNTIL.remove(objectId);
 		LAST_SELF_BUFF.remove(objectId);
 		LAST_SKILL_LEARN_LEVEL.remove(objectId);
@@ -99,6 +103,8 @@ public class PhantomState
 		GOAL_LEVEL.clear();
 		NEXT_HUNT_TELEPORT.clear();
 		LAST_AI_TRACE.clear();
+		LAST_ENGINE_TRACE.clear();
+		SWEEP_LAST_TRY.clear();
 		CITY_REST_UNTIL.clear();
 		LAST_SELF_BUFF.clear();
 		LAST_SKILL_LEARN_LEVEL.clear();

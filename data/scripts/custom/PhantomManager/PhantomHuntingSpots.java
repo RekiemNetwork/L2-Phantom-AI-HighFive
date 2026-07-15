@@ -18,6 +18,11 @@ import org.w3c.dom.NodeList;
 
 public class PhantomHuntingSpots
 {
+	// Antes de este nivel un jugador real levea en la region de su raza: spots, descansos y revives se anclan a la aldea natal (evita orcos/kamael/enanos farmeando el bosque elfico).
+	public static final int RACIAL_AREA_MAX_LEVEL = 20;
+	// Radio desde la aldea natal que cubre la region newbie de cada raza (islas incluidas) sin invadir la vecina.
+	private static final int RACIAL_AREA_RADIUS = 25000;
+
 	private static final Map<Integer, Integer> NPC_LEVELS = new HashMap<>();
 	private static final Map<Integer, String> NPC_NAMES = new HashMap<>();
 	private static final Map<Integer, List<Location>> SPOTS_BY_LEVEL = new HashMap<>();
@@ -94,14 +99,22 @@ public class PhantomHuntingSpots
 
 	public static Location getUncrowdedSpot(Player bot)
 	{
-		List<Location> candidates = getCandidateSpots(bot.getLevel());
+		List<Location> candidates = getCandidateSpots(bot);
 		if (candidates.isEmpty())
 		{
 			return null;
 		}
 
 		// Elige entre los 12 spots MAS CERCANOS no masificados: un jugador real caza cerca de donde esta, y al subir de nivel migra solo (sus spots se alejan).
-		candidates.sort(Comparator.comparingDouble(bot::calculateDistance2D));
+		// Posicion del bot congelada antes de ordenar: se mueve en otro hilo y un comparador en vivo puede violar el contrato de TimSort.
+		final int botX = bot.getX();
+		final int botY = bot.getY();
+		candidates.sort(Comparator.comparingLong(spot ->
+		{
+			final long dx = spot.getX() - botX;
+			final long dy = spot.getY() - botY;
+			return (dx * dx) + (dy * dy);
+		}));
 		List<Location> nearest = candidates.subList(0, Math.min(12, candidates.size()));
 		List<Location> free = new ArrayList<>();
 		for (Location spot : nearest)
@@ -117,11 +130,25 @@ public class PhantomHuntingSpots
 
 	public static Location getRandomSpot(int playerLevel)
 	{
-		List<Location> candidates = getCandidateSpots(playerLevel);
+		List<Location> candidates = getCandidateSpots(playerLevel, null);
 		return candidates.isEmpty() ? null : candidates.get(Rnd.get(candidates.size()));
 	}
 
-	private static List<Location> getCandidateSpots(int playerLevel)
+	private static List<Location> getCandidateSpots(Player bot)
+	{
+		if (bot.getLevel() < RACIAL_AREA_MAX_LEVEL)
+		{
+			// Anclaje racial: solo spots de la region natal. Si el indice no tuviera ninguno, cae al pool global antes que dejar al bot sin destino.
+			List<Location> homeCandidates = getCandidateSpots(bot.getLevel(), bot.getTemplate().getCreationPoint());
+			if (!homeCandidates.isEmpty())
+			{
+				return homeCandidates;
+			}
+		}
+		return getCandidateSpots(bot.getLevel(), null);
+	}
+
+	private static List<Location> getCandidateSpots(int playerLevel, Location home)
 	{
 		for (int range = 0; range <= 12; range++)
 		{
@@ -133,7 +160,13 @@ public class PhantomHuntingSpots
 				List<Location> spots = SPOTS_BY_LEVEL.get(level);
 				if (spots != null)
 				{
-					candidates.addAll(spots);
+					for (Location spot : spots)
+					{
+						if ((home == null) || isNearHome(spot, home))
+						{
+							candidates.add(spot);
+						}
+					}
 				}
 			}
 			if (!candidates.isEmpty())
@@ -142,6 +175,13 @@ public class PhantomHuntingSpots
 			}
 		}
 		return new ArrayList<>();
+	}
+
+	private static boolean isNearHome(Location spot, Location home)
+	{
+		final long dx = spot.getX() - home.getX();
+		final long dy = spot.getY() - home.getY();
+		return ((dx * dx) + (dy * dy)) <= ((long) RACIAL_AREA_RADIUS * RACIAL_AREA_RADIUS);
 	}
 	
 	private static int getLevelBand(int level)
@@ -193,6 +233,11 @@ public class PhantomHuntingSpots
 				int level = Integer.parseInt(npc.getAttribute("level"));
 				String name = npc.getAttribute("name");
 				if (isForbiddenTargetName(name))
+				{
+					continue;
+				}
+				// Mismo criterio que el core (NpcTemplate: title.contains("Quest")): no indexar zonas de mobs de quest como spots de farmeo, no dan experiencia.
+				if (npc.getAttribute("title").contains("Quest"))
 				{
 					continue;
 				}

@@ -33,6 +33,7 @@ public class PhantomManager extends Script implements IVoicedCommandHandler
 	
 	private static boolean _debugMode = true;
 	private static String _sessionLogFile = "log/PhantomManager-session-pending.txt";
+	private static int _logLinesSinceRotationCheck = 0;
 	
 	public PhantomManager()
 	{
@@ -107,12 +108,17 @@ public class PhantomManager extends Script implements IVoicedCommandHandler
 		try
 		{
 			// Rotacion del stream continuo: al pasar de 50 MB se renombra a .txt.1 (pisando la generacion anterior) y se empieza limpio.
-			final File globalLog = new File("log/PhantomManager.txt");
-			if (globalLog.length() > (50L * 1024 * 1024))
+			// El stat del fichero se muestrea cada 50 lineas: hacerlo por linea es un syscall extra en un metodo synchronized que a 1000 bots se nota.
+			if (++_logLinesSinceRotationCheck >= 50)
 			{
-				final File rotated = new File("log/PhantomManager.txt.1");
-				rotated.delete();
-				globalLog.renameTo(rotated);
+				_logLinesSinceRotationCheck = 0;
+				final File globalLog = new File("log/PhantomManager.txt");
+				if (globalLog.length() > (50L * 1024 * 1024))
+				{
+					final File rotated = new File("log/PhantomManager.txt.1");
+					rotated.delete();
+					globalLog.renameTo(rotated);
+				}
 			}
 		}
 		catch (Exception e)

@@ -3,7 +3,9 @@ package custom.PhantomManager;
 import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ScheduledFuture;
 
 import org.l2jmobius.commons.threads.ThreadPool;
@@ -101,7 +103,13 @@ public class PhantomPopulation
 	{
 		// Desconecta primero a los mas cercanos a terminar su sesion (salida natural, no aleatoria).
 		final List<Player> candidates = new ArrayList<>(PhantomEngine.activePhantoms);
-		candidates.sort(Comparator.comparingLong(p -> PhantomState.SESSION_END.getOrDefault(p.getObjectId(), Long.MAX_VALUE)));
+		// Valores congelados antes de ordenar: unregister() puede quitar la clave a mitad y un comparador en vivo violaria el contrato de TimSort.
+		final Map<Integer, Long> sessionEnds = new HashMap<>();
+		for (Player p : candidates)
+		{
+			sessionEnds.put(p.getObjectId(), PhantomState.SESSION_END.getOrDefault(p.getObjectId(), Long.MAX_VALUE));
+		}
+		candidates.sort(Comparator.comparingLong(p -> sessionEnds.get(p.getObjectId())));
 		int trimmed = 0;
 		for (Player phantom : candidates)
 		{

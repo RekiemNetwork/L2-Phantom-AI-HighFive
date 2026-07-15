@@ -2,7 +2,9 @@ package custom.PhantomManager;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import org.l2jmobius.commons.util.Rnd;
 import org.l2jmobius.gameserver.ai.Intention;
@@ -17,6 +19,7 @@ import org.l2jmobius.gameserver.model.actor.instance.Monster;
 import org.l2jmobius.gameserver.model.item.enums.ShotType;
 import org.l2jmobius.gameserver.model.item.instance.Item;
 import org.l2jmobius.gameserver.model.skill.Skill;
+import org.l2jmobius.gameserver.model.zone.ZoneId;
 import org.l2jmobius.gameserver.util.LocationUtil;
 
 public class PhantomAI
@@ -92,6 +95,12 @@ public class PhantomAI
 			return;
 		}
 		
+		if (sweepSpoiledCorpse(bot))
+		{
+			trace(bot, "sweep de mob spoileado");
+			return;
+		}
+
 		if (pickupNearbyDrops(bot))
 		{
 			trace(bot, "recogiendo drops");
@@ -183,6 +192,16 @@ public class PhantomAI
 		{
 			PhantomEngine.walkAwayFrom(bot, observer);
 			trace(bot, "viaje a ciudad pospuesto: se aleja andando de un jugador real");
+			return;
+		}
+		if (bot.getLevel() < PhantomHuntingSpots.RACIAL_AREA_MAX_LEVEL)
+		{
+			// La lista de rutas no incluye las aldeas raciales y mandaba a un enano L5 a Giran: antes del nivel 20 la "ciudad" de un jugador es su aldea natal.
+			Location home = PhantomGeo.getSafeSpawn(bot.getTemplate().getCreationPoint(), 150);
+			PhantomEngine.movePhantomTo(bot, home, reason + ". Descansa en su aldea natal");
+			PhantomState.HUNT_LEVEL_BAND.put(bot.getObjectId(), -1);
+			PhantomState.CITY_REST_UNTIL.put(bot.getObjectId(), System.currentTimeMillis() + Rnd.get(CITY_REST_MIN_TIME, CITY_REST_MAX_TIME));
+			PhantomManager.logToFile(bot.getName(), reason + ". Descansa en su aldea natal.");
 			return;
 		}
 		PhantomConfig.FarmZone nearest = null;
@@ -331,7 +350,15 @@ public class PhantomAI
 		{
 			return null;
 		}
-		anchors.sort(Comparator.comparingDouble(bot::calculateDistance2D));
+		// Posicion del bot congelada antes de ordenar: se mueve en otro hilo y un comparador en vivo puede violar el contrato de TimSort.
+		final int botX = bot.getX();
+		final int botY = bot.getY();
+		anchors.sort(Comparator.comparingLong(anchor ->
+		{
+			final long dx = anchor.getX() - botX;
+			final long dy = anchor.getY() - botY;
+			return (dx * dx) + (dy * dy);
+		}));
 		List<Location> nearest = anchors.subList(0, Math.min(8, anchors.size()));
 		return nearest.get(Rnd.get(nearest.size()));
 	}
@@ -383,6 +410,11 @@ public class PhantomAI
 		{
 			return null;
 		}
+		if (bot.isInsideZone(ZoneId.PEACE))
+		{
+			// En zona de paz el ataque ni siquiera puede ejecutarse: iniciar teatro PvP ahi deja a los bots plantados en la aldea.
+			return null;
+		}
 		
 		boolean pkMode = PhantomState.isPk(bot.getObjectId());
 		Player closest = null;
@@ -401,7 +433,15 @@ public class PhantomAI
 			{
 				continue;
 			}
-			
+			if (p.isInsideZone(ZoneId.PEACE))
+			{
+				continue;
+			}
+			if (!GeoEngine.getInstance().canSeeTarget(bot, p))
+			{
+				continue;
+			}
+
 			double distance = LocationUtil.calculateDistance(bot, p, true, false);
 			if (distance < closestDistance)
 			{
@@ -416,10 +456,11 @@ public class PhantomAI
 	{
 		if (!PhantomConfig.PK_ENABLED || !PhantomState.isPk(bot.getObjectId()) || (bot.getLevel() < PhantomConfig.PK_MIN_LEVEL) || (victim.getPvpFlag() > 0))
 		{
-			if (PhantomEngine.activePhantoms.contains(victim))
+			if (PhantomEngine.activePhantoms.contains(victim) && (bot.getKarma() == 0) && (victim.getKarma() == 0) && !bot.isInsideZone(ZoneId.PEACE) && !victim.isInsideZone(ZoneId.PEACE))
 			{
-				bot.startPvPFlag();
-				victim.startPvPFlag();
+				// updatePvPStatus y no startPvPFlag: solo el primero renueva _pvpFlagLasts (sin el, el flag se apaga al segundo). Mismos gates que en executeAttackPlan: sin rojos de por medio y fuera de zona de paz.
+				bot.updatePvPStatus();
+				victim.updatePvPStatus();
 			}
 			return;
 		}
@@ -590,19 +631,66 @@ public class PhantomAI
 
 		long now = System.currentTimeMillis();
 		Long since = PhantomState.COMBAT_STILL_SINCE.putIfAbsent(bot.getObjectId(), now);
-		if ((since == null) || ((now - since) < 10000))
+		if ((since == null) || ((now - since) < 6000))
 		{
 			return false;
 		}
 
-		// Quieto 10s con el objetivo fuera de alcance = bloqueado por un obstaculo (arbol/roca): abandona ese mob 60s y busca otro.
+		// Quieto 6s con el objetivo fuera de alcance = bloqueado por un obstaculo (arbol/roca/fuente): abandona ese mob 60s y busca otro.
 		PhantomState.COMBAT_STILL_SINCE.remove(bot.getObjectId());
 		PhantomState.IGNORED_MOB.put(bot.getObjectId(), target.getObjectId());
 		PhantomState.IGNORED_MOB_UNTIL.put(bot.getObjectId(), now + 60000);
 		bot.setTarget(null);
-		bot.getAI().setIntention(Intention.ACTIVE);
+		// Despegarse del muro: hasta 4 intentos de paso lateral, quedandose con el primero que desplaza de verdad — un rumbo hacia el propio muro se trunca en la cara del obstaculo (getValidLocation) y dejaria al bot posando en el sitio.
+		Location detour = null;
+		for (int i = 0; i < 4; i++)
+		{
+			final Location candidate = PhantomGeo.getSafeSpawn(new Location(bot.getX(), bot.getY(), bot.getZ()), 300);
+			final Location valid = GeoEngine.getInstance().getValidLocation(bot.getX(), bot.getY(), bot.getZ(), candidate.getX(), candidate.getY(), candidate.getZ(), bot.getInstanceId());
+			if (bot.calculateDistance2D(valid) >= 150)
+			{
+				detour = valid;
+				break;
+			}
+		}
+		if (detour != null)
+		{
+			bot.getAI().setIntention(Intention.MOVE_TO, detour);
+		}
+		else
+		{
+			bot.getAI().setIntention(Intention.ACTIVE);
+		}
 		PhantomManager.logToFile(bot.getName(), "Objetivo inalcanzable tras obstaculo. Abandona mob: " + target.getName());
 		return true;
+	}
+
+	private static boolean sweepSpoiledCorpse(Player bot)
+	{
+		final Skill sweeper = bot.getKnownSkill(42); // Sweeper (enanos, nivel 10+).
+		if (sweeper == null)
+		{
+			return false;
+		}
+		// Ritmo maximo de un intento cada 4s: si un cast falla (sobrepeso, cadaver viejo, sin MP) el cadaver sigue isSweepActive y reintentarlo por tick spamearia casts y ahogaria la recogida de drops (que corre despues); entre intentos el tick sigue su curso normal. Acotado por el decay del cadaver (~10s).
+		final long now = System.currentTimeMillis();
+		if ((now - PhantomState.SWEEP_LAST_TRY.getOrDefault(bot.getObjectId(), 0L)) < 4000)
+		{
+			return false;
+		}
+		for (Monster corpse : World.getInstance().getVisibleObjectsInRange(bot, Monster.class, 400))
+		{
+			// Solo cadaveres spoileados por este bot y con botin de sweep pendiente: spoilear y no barrer canta a bot.
+			if (corpse.isDead() && corpse.isSweepActive() && (corpse.getSpoilerObjectId() == bot.getObjectId()))
+			{
+				PhantomState.SWEEP_LAST_TRY.put(bot.getObjectId(), now);
+				trace(bot, "barriendo (sweep) a " + corpse.getName());
+				bot.setTarget(corpse);
+				bot.getAI().setIntention(Intention.CAST, sweeper, corpse);
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private static boolean pickupNearbyDrops(Player bot)
@@ -667,34 +755,57 @@ public class PhantomAI
 			return null;
 		}
 		
-		PhantomState.STUCK_COUNTERS.put(bot.getObjectId(), 0);
 		if (idealMobs.isEmpty() && backupMobs.isEmpty())
 		{
+			PhantomState.STUCK_COUNTERS.put(bot.getObjectId(), 0);
 			PhantomManager.logToFile(bot.getName(), "Hay mobs cerca, pero todos estan ocupados por otros phantoms.");
 			return null;
 		}
-		return !idealMobs.isEmpty() ? getNearestMob(bot, idealMobs) : (!backupMobs.isEmpty() ? getNearestMob(bot, backupMobs) : null);
+
+		// Un jugador real no ataca lo que no ve: elegir un mob tras un muro hace que el pathfinding corte el movimiento contra la pared y el bot se quede pegado a la roca.
+		Monster chosen = getNearestVisibleMob(bot, idealMobs);
+		if (chosen == null)
+		{
+			chosen = getNearestVisibleMob(bot, backupMobs);
+		}
+		if (chosen == null)
+		{
+			// Todos los mobs del radio estan tras obstaculos: cuenta como atascado para que la relocalizacion lo despegue de la pared.
+			int stuckCount = PhantomState.STUCK_COUNTERS.getOrDefault(bot.getObjectId(), 0) + 1;
+			PhantomState.STUCK_COUNTERS.put(bot.getObjectId(), stuckCount);
+			PhantomManager.logToFile(bot.getName(), "Solo hay mobs sin linea de vision. Contador atascado: " + stuckCount);
+			return null;
+		}
+
+		PhantomState.STUCK_COUNTERS.put(bot.getObjectId(), 0);
+		return chosen;
 	}
 	
 	private static boolean isForbiddenFarmTarget(Monster monster)
 	{
-		return PhantomHuntingSpots.isForbiddenTargetName(monster.getName());
+		// Quest Monster (title contiene "Quest") y cualquier mob que no da experiencia: farmearlos no sube nivel y canta a bot pegando a un mob de quest inerte.
+		return monster.isQuestMonster() || (monster.getTemplate().getExp() <= 0) || PhantomHuntingSpots.isForbiddenTargetName(monster.getName());
 	}
 	
-	private static Monster getNearestMob(Player bot, List<Monster> mobs)
+	private static Monster getNearestVisibleMob(Player bot, List<Monster> mobs)
 	{
-		Monster closest = null;
-		double closestDistance = Double.MAX_VALUE;
+		// Orden por distancia y primer valido: en el caso tipico solo se trazan las lineas de 1-2 mobs por tick.
+		// Distancias congeladas antes de ordenar: mobs y bot se mueven en otros hilos y un comparador en vivo puede violar el contrato de TimSort (IllegalArgumentException).
+		final Map<Monster, Double> distances = new HashMap<>();
 		for (Monster mob : mobs)
 		{
-			double distance = LocationUtil.calculateDistance(bot, mob, true, false);
-			if (distance < closestDistance)
+			distances.put(mob, LocationUtil.calculateDistance(bot, mob, true, false));
+		}
+		mobs.sort(Comparator.comparingDouble(distances::get));
+		for (Monster mob : mobs)
+		{
+			// Vista Y camino recto transitable: un obstaculo bajo (la fuente de la aldea) deja pasar la vision por encima pero bloquea el paso — sin el segundo check el bot elige el mob del otro lado y se empotra.
+			if (GeoEngine.getInstance().canSeeTarget(bot, mob) && GeoEngine.getInstance().canMoveToTarget(bot.getX(), bot.getY(), bot.getZ(), mob.getX(), mob.getY(), mob.getZ(), bot.getInstanceId()))
 			{
-				closest = mob;
-				closestDistance = distance;
+				return mob;
 			}
 		}
-		return closest;
+		return null;
 	}
 	
 	private static void handleNoFarmTarget(Player bot)
@@ -753,6 +864,18 @@ public class PhantomAI
 	
 	private static void executeAttackPlan(Player bot, Creature target)
 	{
+		// El flag PvP expira por _pvpFlagLasts y startPvPFlag a secas NO renueva ese timestamp: el task manager (1s) lo apagaba al instante y checkPvpSkill abortaba cada casteo contra el rival ya blanco (animacion cortada en seco). updatePvPStatus es el idioma del core: renueva el timestamp y flagea si hace falta.
+		// Gates del overload con target del core, que el no-arg se salta: nadie se flagea si CUALQUIERA de los dos es rojo (pegar a un caotico no flagea en retail) ni en zona de paz (alli el combate ni ocurre y quedarian posando en purpura dentro de la aldea). A un jugador real jamas se le toca el flag.
+		if (target.isPlayer() && PhantomEngine.activePhantoms.contains(target))
+		{
+			final Player rival = target.asPlayer();
+			if ((bot.getKarma() == 0) && (rival.getKarma() == 0) && !bot.isInsideZone(ZoneId.PEACE) && !rival.isInsideZone(ZoneId.PEACE))
+			{
+				bot.updatePvPStatus();
+				rival.updatePvPStatus();
+			}
+		}
+
 		if (!bot.isChargedShot(ShotType.SOULSHOTS))
 		{
 			bot.setChargedShot(ShotType.SOULSHOTS, true);
@@ -781,12 +904,13 @@ public class PhantomAI
 		final int castChance = bot.isMageClass() ? 85 : 25;
 		if (!offensiveSkills.isEmpty() && (bot.getCurrentMpPercent() > MP_REST_PERCENT) && (Rnd.get(100) < castChance))
 		{
-			PhantomManager.logToFile(bot.getName(), "Casteando contra " + target.getName());
+			// trace y no logToFile: con la cadencia rapida de combate esto corre cada ~1s por bot y el log crecia sin aportar (el "Atacando a X" ya queda registrado al fijar objetivo).
+			trace(bot, "casteando contra " + target.getName());
 			bot.getAI().setIntention(Intention.CAST, offensiveSkills.get(Rnd.get(offensiveSkills.size())), target);
 		}
 		else
 		{
-			PhantomManager.logToFile(bot.getName(), "Ataque fisico contra " + target.getName());
+			trace(bot, "ataque fisico contra " + target.getName());
 			if ((bot.getAI().getIntention() != Intention.ATTACK) || (bot.getTarget() != target))
 			{
 				// En HF el auto-ataque sostenido lo mantiene la intencion ATTACK del AI (equivale al doAutoAttack de Essence) y gestiona tambien la aproximacion.
