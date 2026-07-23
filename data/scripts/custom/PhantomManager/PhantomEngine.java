@@ -342,13 +342,32 @@ public class PhantomEngine
 		return getNearestRealObserver(phantom, radius) != null;
 	}
 
+	/**
+	 * Comprueba si un DESTINO de teleport esta a la vista de algun jugador real: aparecer de la nada en mitad del campo delante de alguien canta tanto como esfumarse.
+	 * @param loc el destino candidato
+	 * @param radius radio de visibilidad a respetar
+	 * @return {@code true} si algun jugador real (no GM, no trader offline, no phantom) lo veria
+	 */
+	public static boolean isSpotObservedByRealPlayer(Location loc, int radius)
+	{
+		for (Player p : World.getInstance().getPlayers())
+		{
+			if (!p.isGM() && !p.isInOfflineMode() && !activePhantoms.contains(p) && (p.calculateDistance2D(loc) < radius))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
 	public static Player getNearestRealObserver(Player phantom, int radius)
 	{
 		Player nearest = null;
 		double nearestDistance = Double.MAX_VALUE;
 		for (Player p : World.getInstance().getVisibleObjectsInRange(phantom, Player.class, radius))
 		{
-			if (!p.isGM() && !activePhantoms.contains(p))
+			// Los traders offline (cliente detached) son tiendas aparcadas: nadie mira a traves de ellos, pero contaban como observador y dejaban a los phantoms de su plaza con el teleport pospuesto PARA SIEMPRE (incidente Pastilletes, plaza de Giran).
+			if (!p.isGM() && !p.isInOfflineMode() && !activePhantoms.contains(p))
 			{
 				double distance = phantom.calculateDistance2D(p);
 				if (distance < nearestDistance)
@@ -363,17 +382,58 @@ public class PhantomEngine
 
 	public static void walkAwayFrom(Player bot, Player observer)
 	{
-		int dx = bot.getX() - observer.getX();
-		int dy = bot.getY() - observer.getY();
-		if ((dx == 0) && (dy == 0))
+		final Location destination = pickOpenFleeDestination(bot, observer.getX(), observer.getY(), 1200);
+		if (destination != null)
 		{
-			dx = Rnd.get(-1, 1);
-			dy = Rnd.get(-1, 1);
+			bot.getAI().setIntention(Intention.MOVE_TO, destination);
 		}
-		int newX = bot.getX() + (dx > 0 ? 1200 : -1200);
-		int newY = bot.getY() + (dy > 0 ? 1200 : -1200);
-		Location destination = GeoEngine.getInstance().getValidLocation(bot.getX(), bot.getY(), bot.getZ(), newX, newY, GeoEngine.getInstance().getHeight(newX, newY, bot.getZ()), bot.getInstanceId());
-		bot.getAI().setIntention(Intention.MOVE_TO, destination);
+	}
+
+	/**
+	 * Elige el rumbo de huida mas despejado (sondeando con geodata) y devuelve el destino SIN truncar: al ver el tramo recto cortado, el moveToLocation del core activa su pathfinding y RODEA los obstaculos — el bot va "por donde se puede", como un jugador real. Truncar aqui con getValidLocation anulaba ese pathfinding (el destino recortado casi nunca supera el umbral que lo activa) y el bot corria contra la primera fachada.
+	 * @param bot el phantom
+	 * @param awayX coordenada X de la que alejarse
+	 * @param awayY coordenada Y de la que alejarse
+	 * @param distance distancia de huida deseada
+	 * @return destino bruto en el rumbo mas abierto, o {@code null} si esta acorralado por todos los rumbos (mejor quedarse quieto con naturalidad que empotrarse)
+	 */
+	public static Location pickOpenFleeDestination(Player bot, int awayX, int awayY, int distance)
+	{
+		final double baseAngle = Math.atan2(bot.getY() - awayY, bot.getX() - awayX);
+		final int[] offsets =
+		{
+			0,
+			45,
+			-45,
+			90,
+			-90
+		};
+		double bestAngle = baseAngle;
+		double bestOpen = 0;
+		for (int offset : offsets)
+		{
+			final double angle = baseAngle + Math.toRadians(offset);
+			final int probeX = bot.getX() + (int) (distance * Math.cos(angle));
+			final int probeY = bot.getY() + (int) (distance * Math.sin(angle));
+			final Location valid = GeoEngine.getInstance().getValidLocation(bot.getX(), bot.getY(), bot.getZ(), probeX, probeY, GeoEngine.getInstance().getHeight(probeX, probeY, bot.getZ()), bot.getInstanceId());
+			final double open = bot.calculateDistance2D(valid);
+			if (open > bestOpen)
+			{
+				bestOpen = open;
+				bestAngle = angle;
+			}
+			if (bestOpen >= (distance / 2.0))
+			{
+				break; // Rumbo suficientemente despejado: no hace falta sondear el resto.
+			}
+		}
+		if (bestOpen < 100)
+		{
+			return null;
+		}
+		final int targetX = bot.getX() + (int) (distance * Math.cos(bestAngle));
+		final int targetY = bot.getY() + (int) (distance * Math.sin(bestAngle));
+		return new Location(targetX, targetY, GeoEngine.getInstance().getHeight(targetX, targetY, bot.getZ()));
 	}
 
 	public static int countPhantomsNear(Location loc, int radius)

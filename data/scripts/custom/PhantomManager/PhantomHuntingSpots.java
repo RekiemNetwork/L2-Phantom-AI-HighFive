@@ -76,7 +76,7 @@ public class PhantomHuntingSpots
 			spot = new Location(zone.spotX, zone.spotY, zone.spotZ);
 		}
 
-		Player observer = PhantomEngine.getNearestRealObserver(bot, 2000);
+		Player observer = PhantomEngine.getNearestRealObserver(bot, PhantomConfig.REAL_OBSERVER_RADIUS);
 		if (observer != null)
 		{
 			// Teleport timido: con un jugador real mirando, se aleja andando y teleporta al perderse de vista.
@@ -119,7 +119,8 @@ public class PhantomHuntingSpots
 		List<Location> free = new ArrayList<>();
 		for (Location spot : nearest)
 		{
-			if (PhantomEngine.countPhantomsNear(spot, 1200) < 3)
+			// Ni masificado de phantoms ni a la vista de un jugador real: aparecer por teleport delante de alguien canta tanto como esfumarse.
+			if ((PhantomEngine.countPhantomsNear(spot, 1200) < 3) && !PhantomEngine.isSpotObservedByRealPlayer(spot, PhantomConfig.REAL_OBSERVER_RADIUS))
 			{
 				free.add(spot);
 			}

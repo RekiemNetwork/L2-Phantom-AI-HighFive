@@ -15,6 +15,7 @@ import org.l2jmobius.gameserver.model.Location;
 import org.l2jmobius.gameserver.model.World;
 import org.l2jmobius.gameserver.model.actor.Creature;
 import org.l2jmobius.gameserver.model.actor.Player;
+import org.l2jmobius.gameserver.model.actor.Summon;
 import org.l2jmobius.gameserver.model.actor.instance.Monster;
 import org.l2jmobius.gameserver.model.item.enums.ShotType;
 import org.l2jmobius.gameserver.model.item.instance.Item;
@@ -35,6 +36,7 @@ public class PhantomAI
 	public static void thinkAndFarm(Player bot)
 	{
 		tryDrinkPotion(bot); // No bloquea: los jugadores beben pociones tambien en pleno combate.
+		ensureServitorFollows(bot); // Tampoco bloquea: corre incluso mientras el bot camina, que es justo cuando el servitor se queda atras.
 
 		if (handleCriticalHp(bot))
 		{
@@ -187,7 +189,7 @@ public class PhantomAI
 			PhantomManager.logToFile(bot.getName(), reason + ". PK: descansa fuera de ciudad.");
 			return;
 		}
-		Player observer = PhantomEngine.getNearestRealObserver(bot, 2000);
+		Player observer = PhantomEngine.getNearestRealObserver(bot, PhantomConfig.REAL_OBSERVER_RADIUS);
 		if (observer != null)
 		{
 			PhantomEngine.walkAwayFrom(bot, observer);
@@ -305,11 +307,12 @@ public class PhantomAI
 	
 	private static void relocateStuckBot(Player bot)
 	{
-		Player observer = PhantomEngine.getNearestRealObserver(bot, 2000);
+		Player observer = PhantomEngine.getNearestRealObserver(bot, PhantomConfig.REAL_OBSERVER_RADIUS);
 		if (observer != null)
 		{
 			PhantomEngine.walkAwayFrom(bot, observer);
-			trace(bot, "teleport pospuesto: se aleja andando de un jugador real");
+			// logToFile y no trace: la traza de "atascado" consume la ventana de throttle cada tick y esta rama quedaba invisible en el log; ademas el nombre del observador es oro para diagnosticar huidas injustificadas (p.ej. de un GM).
+			PhantomManager.logToFile(bot.getName(), "Relocate pospuesto: observador real " + observer.getName() + " (GM=" + observer.isGM() + ") a " + (int) bot.calculateDistance2D(observer) + " uds");
 			return;
 		}
 		Location anchor = getSafeAnchor(bot);
@@ -472,6 +475,16 @@ public class PhantomAI
 		PhantomManager.logToFile(bot.getName(), "Modo PK activado contra " + victim.getName());
 	}
 	
+	private static void ensureServitorFollows(Player bot)
+	{
+		// Sin cliente nadie pulsa el boton de "seguir": tras asistir en combate el servitor queda sin modo follow y se planta donde este mientras el dueno se aleja andando. Si esta vivo, sin combate y lejos, se le devuelve el follow.
+		final Summon summon = bot.getSummon();
+		if ((summon != null) && !summon.isDead() && (summon.getAI().getIntention() != Intention.ATTACK) && (bot.calculateDistance2D(summon) > 250))
+		{
+			summon.setFollowStatus(true);
+		}
+	}
+
 	private static void tryDrinkPotion(Player bot)
 	{
 		if (bot.isDead() || bot.isSitting() || (bot.getCurrentHpPercent() > 55))
@@ -847,18 +860,12 @@ public class PhantomAI
 	
 	private static void runAwayFrom(Player bot, Creature danger)
 	{
-		int dx = bot.getX() - danger.getX();
-		int dy = bot.getY() - danger.getY();
-		if ((dx == 0) && (dy == 0))
+		// Destino bruto por el rumbo mas despejado: el pathfinding del core rodea los obstaculos en ruta (antes el vector recto truncado dejaba al bot empotrado contra el primer muro mientras le pegaban).
+		Location destination = PhantomEngine.pickOpenFleeDestination(bot, danger.getX(), danger.getY(), 1400);
+		if (destination != null)
 		{
-			dx = Rnd.get(-1, 1);
-			dy = Rnd.get(-1, 1);
+			bot.getAI().setIntention(Intention.MOVE_TO, destination);
 		}
-		
-		int newX = bot.getX() + (dx > 0 ? 1400 : -1400);
-		int newY = bot.getY() + (dy > 0 ? 1400 : -1400);
-		Location destination = GeoEngine.getInstance().getValidLocation(bot.getX(), bot.getY(), bot.getZ(), newX, newY, GeoEngine.getInstance().getHeight(newX, newY, bot.getZ()), bot.getInstanceId());
-		bot.getAI().setIntention(Intention.MOVE_TO, destination);
 		PhantomManager.logToFile(bot.getName(), "Sin MP en PvP. Escapando de " + danger.getName());
 	}
 	
